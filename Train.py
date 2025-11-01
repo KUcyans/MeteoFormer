@@ -63,14 +63,14 @@ def suppress_runtime_warnings():
     # --- Optional: silence all UserWarnings (comment out if debugging) ---
     # warnings.filterwarnings("ignore", category=UserWarning)
 
-    print("🔇 Non-critical runtime warnings suppressed.")
+    logging.info("🔇 Non-critical runtime warnings suppressed.")
 
 # ===========================================================
 def lock_and_load(config):
     """Set CUDA device based on config['gpu'] if available, else use CPU."""
-    print("torch.cuda.is_available():", torch.cuda.is_available())
+    logging.info("torch.cuda.is_available():", torch.cuda.is_available())
     available_devices = list(range(torch.cuda.device_count()))
-    print(f"Available CUDA devices: {available_devices}")
+    logging.info(f"Available CUDA devices: {available_devices}")
 
     if torch.cuda.is_available() and len(config.get("gpu", [])) > 0:
         requested_gpus = config.get("gpu", [])
@@ -78,19 +78,19 @@ def lock_and_load(config):
 
         if selected_gpu in available_devices:
             torch.cuda.empty_cache()
-            print("🔥 LOCK AND LOAD! GPU ENGAGED! 🔥")
+            logging.info("🔥 LOCK AND LOAD! GPU ENGAGED! 🔥")
             device = torch.device(f"cuda:{selected_gpu}")
             torch.cuda.set_device(selected_gpu)
             torch.set_float32_matmul_precision("highest")
-            print(f"Using GPU: {selected_gpu} (cuda:{selected_gpu})")
+            logging.info(f"Using GPU: {selected_gpu} (cuda:{selected_gpu})")
         else:
-            print(f"⚠️ Warning: GPU {selected_gpu} is not available. Using CPU instead.")
+            logging.info(f"⚠️ Warning: GPU {selected_gpu} is not available. Using CPU instead.")
             device = torch.device("cpu")
     else:
         device = torch.device("cpu")
-        print("CUDA not available. Using CPU.")
+        logging.info("CUDA not available. Using CPU.")
 
-    print(f"Selected device: {device}")
+    logging.info(f"Selected device: {device}")
     return device
 
 # ===========================================================
@@ -100,12 +100,12 @@ def parse_args():
     parser.add_argument("--window_size", type=int, default=24)
     parser.add_argument("--horizon", type=int, default=12)
     parser.add_argument("--batch_size", type=int, default=128)
-    parser.add_argument("--num_layers", type=int, default=2)
+    parser.add_argument("--num_layers", type=int, default=4)
     parser.add_argument("--n_heads", type=int, default=2)
     parser.add_argument("--d_model", type=int, default=64)
     parser.add_argument("--d_ff", type=int, default=256)
     parser.add_argument("--dropout", type=float, default=0.1)
-    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--val_ratio", type=float, default=0.2)
     parser.add_argument("--test_ratio", type=float, default=0.1)
     parser.add_argument(
@@ -137,8 +137,8 @@ def setup_logging(base_log_dir, current_date, current_time):
         level=logging.INFO,
     )
 
-    print(f"📁 Training logs: {training_logfile}")
-    print(f"📁 MLflow logs:   {mlflow_logfile}")
+    logging.info(f"📁 Training logs: {training_logfile}")
+    logging.info(f"📁 MLflow logs:   {mlflow_logfile}")
     return date_dir, training_logfile, mlflow_logfile
 
 
@@ -199,7 +199,7 @@ def write_benchmark_summary(start_time, end_time, trainer, config, log_file_path
     summary_text = "\n".join(text_output)
 
     # Print to console
-    print(summary_text)
+    logging.info(summary_text)
 
     # Append to log file
     with open(log_file_path, "a", encoding="utf-8") as f:
@@ -228,11 +228,11 @@ def run():
     mlf_logger.log_hyperparams(config)
 
     # === Example data ===
-    print("🌍 Fetching Meteostat hourly data for Copenhagen...")
+    logging.info("🌍 Fetching Meteostat hourly data for Copenhagen...")
     kbh = Point(lat=55.6761, lon=12.5683)
     df_raw = get_hourly_example(kbh, start=datetime(2015, 1, 1), end=datetime(2018, 12, 31))
 
-    print("📦 Building DataModule...")
+    logging.info("📦 Building DataModule...")
     dm = MeteoDatasetModule(
         data=df_raw,
         window_size=config["window_size"],
@@ -243,9 +243,9 @@ def run():
     )
     dm.setup()
     available_feature_list = dm._get_available_features()
-    print(f"Available features: {available_feature_list}")
+    logging.info(f"Available features: {available_feature_list}")
 
-    print("⚙️ Building model...")
+    logging.info("⚙️ Building model...")
     model = MeteoVanillaTransformerEncoder(
         input_features=available_feature_list,
         target_features=config["target_features"],
@@ -286,26 +286,26 @@ def run():
         gradient_clip_algorithm="norm",
     )
 
-    print("🚀 Starting training...")
+    logging.info("🚀 Starting training...")
     start_time = time.time()
     trainer.fit(model, datamodule=dm)
     end_time = time.time()
     write_benchmark_summary(start_time, end_time, trainer, config, training_log)
-    print("✅ Training complete.")
-    print(f"📂 Checkpoints saved in: {checkpoint_dir}")
-    print(f"📝 Training log: {training_log}")
-    print(f"🧪 MLflow log: {mlflow_log}")
+    logging.info("✅ Training complete.")
+    logging.info(f"📂 Checkpoints saved in: {checkpoint_dir}")
+    logging.info(f"📝 Training log: {training_log}")
+    logging.info(f"🧪 MLflow log: {mlflow_log}")
 
 # ===========================================================
 if __name__ == "__main__":
     run()
 
 
-# nohup python Train.py --gpu 0 --epochs 10 > logs/$(date +"%Y%m%d_%H%M%S")_train.log 2>&1 &
+# nohup python Train.py --gpu 0 --epochs 20 > logs/$(date +"%Y%m%d_%H%M%S")_train.log 2>&1 &
 # nohup mlflow ui --port 5000 > logs/$(date +"%Y%m%d_%H%M%S")_mlflow.log 2>&1 &
 
 
-# nohup python Train.py --gpu 0 --epochs 10 &
+# nohup python Train.py --gpu 0 --epochs 20 &
 # nohup mlflow ui --port 5000 > logs/mlflow_ui.log 2>&1 &
 
 

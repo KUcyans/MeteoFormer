@@ -4,6 +4,7 @@ import torch.nn.functional as F
 # import pytorch_lightning as pl
 from pytorch_lightning import LightningModule
 from typing import List
+import logging
 # 30 sec
 # 
 
@@ -298,7 +299,14 @@ class MeteoVanillaTransformerEncoder(LightningModule):
 
     # ==============================================================
     def _compute_loss(self, preds, targets, mask):
-        """Compute MSE loss with masking applied."""
+        """
+        Compute MSE loss with masking applied.
+        predictions for all S input tokens, 
+        but only the last horizon is used for loss:
+        pred (B, S, F)
+        targets (B, S, F)
+        mask (B, S
+        """
         valid = mask.any(-1)
         preds_future = preds[:, -self.horizon:, :]
         targets_future = targets[:, -self.horizon:, :]
@@ -335,7 +343,7 @@ class MeteoVanillaTransformerEncoder(LightningModule):
             elif t in DERIVED_FEATURES:
                 derived = [f for f in DERIVED_FEATURES[t] if f in input_features]
                 if len(derived) == len(DERIVED_FEATURES[t]):
-                    print(f"⚠️ Target '{t}' expanded to derived features {derived}")
+                    logging.info(f"⚠️ Target '{t}' expanded to derived features {derived}")
                     resolved_targets.extend(derived)
                 else:
                     missing = set(DERIVED_FEATURES[t]) - set(derived)
@@ -349,7 +357,8 @@ class MeteoVanillaTransformerEncoder(LightningModule):
     def training_step(self, batch, batch_idx):
         x, y, x_mask, y_mask = batch
         preds = self.forward(x, mask=x_mask.any(-1))
-        # x: (B, horizon, target_dim)
+        # x: (B, horizon, feature_dim)
+        # pred: (B, horizon, target_dim)
         loss = self._compute_loss(preds, y, y_mask)
         self.log("train_loss", loss)
 
@@ -359,9 +368,9 @@ class MeteoVanillaTransformerEncoder(LightningModule):
             period = max(100, len(train_loader) // 3)
             if batch_idx % period == 0:
                 current_lr = self.trainer.optimizers[0].param_groups[0]["lr"]
-                print(f"\n[Epoch {self.current_epoch} | Batch {batch_idx}]")
-                print(f"Train Loss: {loss.item():.6f} | LR: {current_lr:.2e}")
-                print(f"Preds: mean={preds.mean().item():.4f}, std={preds.std().item():.4f}")
+                logging.info(f"\n[Epoch {self.current_epoch} | Batch {batch_idx}]")
+                logging.info(f"Train Loss: {loss.item():.6f} | LR: {current_lr:.2e}")
+                logging.info(f"Preds: mean={preds.mean().item():.4f}, std={preds.std().item():.4f}")
                 self.log("lr", current_lr, prog_bar=True)
 
         return loss
@@ -380,9 +389,9 @@ class MeteoVanillaTransformerEncoder(LightningModule):
             except Exception:
                 period = 200  # fallback for safety (e.g. during fast_dev_run)
             if batch_idx % period == 0:
-                print(f"\nValidation: Epoch {self.current_epoch}, Batch {batch_idx}")
-                print(f"Val Loss: {loss.item():.6f}")
-                print(f"Preds: mean={preds.mean().item():.4f}, std={preds.std().item():.4f}")
+                logging.info(f"\nValidation: Epoch {self.current_epoch}, Batch {batch_idx}")
+                logging.info(f"Val Loss: {loss.item():.6f}")
+                logging.info(f"Preds: mean={preds.mean().item():.4f}, std={preds.std().item():.4f}")
 
         return loss
 
