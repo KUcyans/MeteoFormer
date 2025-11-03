@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 # import pytorch_lightning as pl
 from pytorch_lightning import LightningModule
+from DataPipelineWorkShop import ForecastContext, ModelContext
 from typing import List
 import logging
 # 30 sec
@@ -216,33 +217,44 @@ class MeteoVanillaTransformerEncoder(LightningModule):
       - Fully self-contained (no external Encoder class)
     """
 
-    def __init__(self,
-                 input_features: List[str],
-                 target_features: List[str],
-                 d_model: int,
-                 n_heads: int,
-                 d_ff: int,
-                 num_layers: int,
-                 dropout: float,
-                 window: int,
-                 horizon: int,
-                 causal: bool = False,
-                 activation: str = 'gelu',):
+    def __init__(
+        self,
+        model_ctx: ModelContext,
+        forecast_ctx: ForecastContext,
+        input_features: List[str],
+        target_features: List[str],
+    ):
         super().__init__()
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=["model_ctx", "forecast_ctx"])  # we store contexts separately
+
+        # store contexts
+        self.model_ctx = model_ctx
+        self.forecast_ctx = forecast_ctx
+
+        # store features
         self.input_features = input_features
         self.feature_dim = len(input_features)
-        
         self.target_features = self._resolve_target_features(target_features, input_features)
-        # find the right indices for target columns
         self.target_indices = [input_features.index(t) for t in self.target_features]
         self.target_dim = len(self.target_features)
+
+        # short aliases (for convenience & readability inside code)
+        d_model = model_ctx.d_model
+        n_heads = model_ctx.n_heads
+        d_ff = model_ctx.d_ff
+        num_layers = model_ctx.num_layers
+        dropout = model_ctx.dropout
+        activation = model_ctx.activation
+
+        window = forecast_ctx.window
+        horizon = forecast_ctx.horizon
+        causal = forecast_ctx.causal
 
         self.d_model = d_model
         self.window = window
         self.horizon = horizon
         self.causal = causal
-        
+
         # --- Input projection ---
         self.input_proj = nn.Linear(self.feature_dim, d_model)
 
@@ -268,6 +280,7 @@ class MeteoVanillaTransformerEncoder(LightningModule):
 
         # --- Loss ---
         self.loss_fn = nn.MSELoss()
+
 
     # ==============================================================
     def forward(self, x, mask=None):
@@ -401,6 +414,13 @@ class MeteoVanillaTransformerEncoder(LightningModule):
         loss = self._compute_loss(preds, y, y_mask)
         self.log("test_loss", loss)
         return loss
+    
+    def predict_step(self, batch, batch_idx):
+        x, y, x_mask, y_mask = batch
+        preds = self.forward(x, mask=x_mask.any(-1))
+        # return only the last horizon (forecast window)
+        return preds[:, -self.horizon:, :]
+
 
     def configure_optimizers(self):
         max_lr = 1e-4

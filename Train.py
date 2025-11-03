@@ -16,9 +16,11 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, TQDMProgressBar
 from pytorch_lightning.loggers import MLFlowLogger
 from meteostat import Point
-from DataPipelineWorkShop import get_hourly_example, MeteoPreprocessor, MeteoDatasetModule
+from DataPipelineWorkShop import get_hourly_example, MeteoDatasetModule, PreprocessingContext, ForecastContext, ModelContext, ExperimentContext
 from VanillaTransformer import MeteoVanillaTransformerEncoder
 import pandas as pd
+# from contexts import PreprocessingContext, ForecastContext, ModelContext, ExperimentContext
+
 
 import warnings
 
@@ -231,31 +233,49 @@ def run():
     logging.info("🌍 Fetching Meteostat hourly data for Copenhagen...")
     kbh = Point(lat=55.6761, lon=12.5683)
     df_raw = get_hourly_example(kbh, start=datetime(2015, 1, 1), end=datetime(2018, 12, 31))
+    
+    # context objects
+    pre_ctx = PreprocessingContext()
+    fc_ctx = ForecastContext(
+        window=config["window_size"],
+        horizon=config["horizon"],
+        val_ratio=config["val_ratio"],
+        test_ratio=config["test_ratio"],
+    )
+    model_ctx=ModelContext(
+        d_model=config["d_model"],
+        n_heads=config["n_heads"],
+        d_ff=config["d_ff"],
+        num_layers=config["num_layers"],
+        dropout=config["dropout"]
+    )
+    
+    # complex context object
+    exp_ctx = ExperimentContext(
+        preprocessing=pre_ctx,
+        forecast=fc_ctx,
+        model=model_ctx
+    )
 
     logging.info("📦 Building DataModule...")
     dm = MeteoDatasetModule(
         data=df_raw,
-        window_size=config["window_size"],
-        horizon=config["horizon"],
+        ctx=exp_ctx,
         batch_size=config["batch_size"],
-        val_ratio=config["val_ratio"],
-        test_ratio=config["test_ratio"]
+        num_workers=2,
+        shuffle_train=True
     )
+
     dm.setup()
     available_feature_list = dm._get_available_features()
     logging.info(f"Available features: {available_feature_list}")
 
     logging.info("⚙️ Building model...")
     model = MeteoVanillaTransformerEncoder(
+        model_ctx=model_ctx,
+        forecast_ctx=fc_ctx,
         input_features=available_feature_list,
-        target_features=config["target_features"],
-        window=config["window_size"],
-        d_model=config["d_model"],
-        n_heads=config["n_heads"],
-        d_ff=config["d_ff"],
-        num_layers=config["num_layers"],
-        dropout=config["dropout"],
-        horizon=config["horizon"]
+        target_features=config["target_features"]
     )
 
     checkpoint_dir = os.path.join(log_dir, f"{current_date}_{current_time}_checkpoints")
@@ -300,14 +320,11 @@ def run():
 if __name__ == "__main__":
     run()
 
-
 # nohup python Train.py --gpu 0 --epochs 20 > logs/$(date +"%Y%m%d_%H%M%S")_train.log 2>&1 &
 # nohup mlflow ui --port 5000 > logs/$(date +"%Y%m%d_%H%M%S")_mlflow.log 2>&1 &
 
-
 # nohup python Train.py --gpu 0 --epochs 20 &
 # nohup mlflow ui --port 5000 > logs/mlflow_ui.log 2>&1 &
-
 
 # terminal 1
 # sh RunMLflow.sh 

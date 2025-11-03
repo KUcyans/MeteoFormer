@@ -7,6 +7,8 @@ from tqdm import tqdm
 import sys
 import numpy as np
 from typing import Optional, List
+
+from dataclasses import dataclass
 # 5 sec: depends a lot on the internet connection
 # 30 sec – the south west corner of the black diamond
 import torch
@@ -36,7 +38,44 @@ def isClean(df: pd.DataFrame) -> bool:
 
     return _is_clean
 
+# ==============================================================
+@dataclass(frozen=True)
+class PreprocessingContext:
+    use_cyclic: bool = True
+    categorical_mode: str = "embedding"
 
+    def build(self):
+        from DataPipelineWorkShop import MeteoPreprocessor
+        return MeteoPreprocessor(self.use_cyclic, self.categorical_mode)
+
+@dataclass(frozen=True)
+class ForecastContext:
+    window: int
+    horizon: int
+    causal: bool = False
+    overlap: bool = True
+    strict: bool = False
+    gap: int = 60
+    val_ratio: float = 0.2
+    test_ratio: float = 0.1
+
+@dataclass(frozen=True)
+class ModelContext:
+    d_model: int
+    n_heads: int
+    d_ff: int
+    num_layers: int
+    dropout: float
+    activation: str = "gelu"
+
+@dataclass(frozen=True)
+class ExperimentContext:
+    preprocessing: PreprocessingContext
+    forecast: ForecastContext
+    model: ModelContext
+
+
+# ==============================================================
 class CyclicConversion:
     """
     Convert time- and angle-based features into cyclic (sin/cos) representations
@@ -102,6 +141,7 @@ class CyclicConversion:
 
         return df
 
+# ==============================================================
 class PseudoNormaliser:
     """
     Lightweight fixed-constant normaliser.
@@ -169,7 +209,8 @@ class PseudoNormaliser:
 
         # Do NOT fill NaNs — they’ll be handled later through masking
         return df
-    
+
+# ==============================================================    
 class CategoricalEncoder:
     """
     Encode categorical weather condition feature ('coco') using either:
@@ -247,7 +288,7 @@ class CategoricalEncoder:
 
         return df
 
-
+# ==============================================================
 class MeteoPreprocessor:
     """
     Composes cyclic, categorical, and pseudo-normalisation transformations.
@@ -290,7 +331,7 @@ class MeteoPreprocessor:
     def __call__(self, data):
         return self.transform(data)
 
-
+# ==============================================================
 class MeteoDataset(Dataset):
     """
     Dataset for meteorological sequence-to-sequence forecasting.
@@ -315,26 +356,33 @@ class MeteoDataset(Dataset):
         "sin_wdir", "cos_wdir", 
     ]
 
-    def __init__(self,
-                 source_data: pd.DataFrame,
-                 window_size: int = 24,
-                 horizon: int = 12,
-                 overlap: bool = True,
-                 strict: bool = False):
-        self.window_size = window_size
-        self.horizon = horizon
-        self.overlap = overlap
-        self.strict = strict
-        self.preprocessor = MeteoPreprocessor()
-        
+    def __init__(
+        self,
+        source_data: pd.DataFrame,
+        forecast: ForecastContext,
+        preprocessing: PreprocessingContext
+    ):
+
+
+        # store contexts
+        self.forecast_ctx = forecast
+        self.preprocessor = MeteoPreprocessor(
+            use_cyclic=preprocessing.use_cyclic,
+            categorical_mode=preprocessing.categorical_mode
+        )
+
+        self.window_size = forecast.window
+        self.horizon = forecast.horizon
+        self.overlap = forecast.overlap
+        self.strict = forecast.strict
+
         # --- Defensive copy ---
         self.source_data = source_data.copy(deep=True)
-        
+
         # Ensure all columns exist, even if entirely NaN
         for col in self.ALL_FEATURES:
             if col not in source_data.columns:
                 source_data[col] = np.nan
-
 
         # --- Ensure datetime index BEFORE preprocessing ---
         if not isinstance(self.source_data.index, pd.DatetimeIndex):
@@ -344,7 +392,7 @@ class MeteoDataset(Dataset):
             else:
                 raise ValueError("No DatetimeIndex or 'time' column found for cyclic encoding.")
 
-        # --- Apply preprocessing ---
+        # --- Apply preprocessing from context ---
         print("🧭 Applying in-dataset preprocessing...")
         self.source_data = self.preprocessor(self.source_data)
 
@@ -375,10 +423,11 @@ class MeteoDataset(Dataset):
         if len(self.windows) > 0:
             x0, y0 = self.windows[0]
             print(f"📊 MeteoDataset built: {len(self.windows)} samples | "
-                  f"Input shape: {x0.shape} | Target shape: {y0.shape} | "
-                  f"Features: {len(self.available_features)} ({self.available_features})")
+                f"Input shape: {x0.shape} | Target shape: {y0.shape} | "
+                f"Features: {len(self.available_features)} ({self.available_features})")
         else:
             print("⚠️ MeteoDataset built with 0 samples!")
+
 
     # ==============================================================
     def _get_available_features(self) -> List[str]:
@@ -432,28 +481,19 @@ class MeteoDatasetModule(LightningDataModule):
     Prevents leakage by inserting temporal gaps between train, val, and test.
     """
 
-    def __init__(self,
-                 data: pd.DataFrame,
-                 window_size: int = 24,
-                 horizon: int = 12,
-                 gap: int = 60,
-                 batch_size: int = 128,
-                 num_workers: int = 2,
-                 val_ratio: float = 0.2,
-                 test_ratio: float = 0.1,
+    def __init__(self, 
+                 data: pd.DataFrame, 
+                 ctx: ExperimentContext, 
+                 batch_size: int = 128, 
+                 num_workers: int = 2, 
                  shuffle_train: bool = True):
         super().__init__()
 
         self.data = data
-        self.window_size = window_size
-        self.horizon = horizon
-        self.gap = gap
+        self.ctx = ctx
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.val_ratio = val_ratio
-        self.test_ratio = test_ratio
         self.shuffle_train = shuffle_train
-
         self.train_dataset = None
         self.val_dataset = None
         self.test_dataset = None
@@ -465,15 +505,16 @@ class MeteoDatasetModule(LightningDataModule):
         Gaps ensure no window from training overlaps with validation/test data.
         """
         n = len(self.data)
-        n_test = int(n * self.test_ratio)
-        n_val = int(n * self.val_ratio)
+        fc = self.ctx.forecast
+        n_test = int(n * fc.test_ratio)
+        n_val = int(n * fc.val_ratio)
         n_train = n - n_val - n_test
 
         # compute gap indices (avoid overlap)
-        train_end = n_train - self.gap
-        val_start = n_train + self.gap
-        val_end = n_train + n_val - self.gap
-        test_start = n_train + n_val + self.gap
+        train_end = n_train - fc.gap
+        val_start = n_train + fc.gap
+        val_end = n_train + n_val - fc.gap
+        test_start = n_train + n_val + fc.gap
 
         # enforce boundaries
         train_end = max(train_end, 0)
@@ -491,9 +532,19 @@ class MeteoDatasetModule(LightningDataModule):
         assert df_val.index.max() < df_test.index.min(), "Val–Test overlap detected!"
 
         # instantiate datasets
-        self.train_dataset = MeteoDataset(df_train, self.window_size, self.horizon)
-        self.val_dataset = MeteoDataset(df_val, self.window_size, self.horizon)
-        self.test_dataset = MeteoDataset(df_test, self.window_size, self.horizon)
+        # self.train_dataset = MeteoDataset(df_train, self.window_size, self.horizon)
+        # self.val_dataset = MeteoDataset(df_val, self.window_size, self.horizon)
+        # self.test_dataset = MeteoDataset(df_test, self.window_size, self.horizon)
+        self.train_dataset = MeteoDataset(df_train, self.ctx.forecast, self.ctx.preprocessing)
+        self.val_dataset = MeteoDataset(df_val, self.ctx.forecast, self.ctx.preprocessing)
+        self.test_dataset = MeteoDataset(df_test, self.ctx.forecast, self.ctx.preprocessing)
+
+
+
+    # ===========================================================
+    def setup_prediction(self, data_future: pd.DataFrame):
+        self.pred_dataset = MeteoDataset(data_future, self.ctx.forecast, self.ctx.preprocessing)
+
 
     # ===========================================================
     def train_dataloader(self):
@@ -516,6 +567,14 @@ class MeteoDatasetModule(LightningDataModule):
     def test_dataloader(self):
         return DataLoader(
             self.test_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+        )
+        
+    def predict_dataloader(self):
+        return DataLoader(
+            self.pred_dataset,
             batch_size=self.batch_size,
             shuffle=False,
             num_workers=self.num_workers,
