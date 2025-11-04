@@ -9,12 +9,14 @@ import argparse
 from tabulate import tabulate
 import time
 import os
+import sys
 import torch
 import logging
 from datetime import datetime
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, TQDMProgressBar
 from pytorch_lightning.loggers import MLFlowLogger
+from mlflow import end_run
 from meteostat import Point
 from DataPipelineWorkShop import get_hourly_example, MeteoDatasetModule, PreprocessingContext, ForecastContext, ModelContext, ExperimentContext
 from VanillaTransformer import MeteoVanillaTransformerEncoder
@@ -70,7 +72,7 @@ def suppress_runtime_warnings():
 # ===========================================================
 def lock_and_load(config):
     """Set CUDA device based on config['gpu'] if available, else use CPU."""
-    logging.info("torch.cuda.is_available():", torch.cuda.is_available())
+    logging.info(f"torch.cuda.is_available(): {torch.cuda.is_available()}")
     available_devices = list(range(torch.cuda.device_count()))
     logging.info(f"Available CUDA devices: {available_devices}")
 
@@ -104,8 +106,8 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--num_layers", type=int, default=4)
     parser.add_argument("--n_heads", type=int, default=2)
-    parser.add_argument("--d_model", type=int, default=64)
-    parser.add_argument("--d_ff", type=int, default=256)
+    parser.add_argument("--d_model", type=int, default=128)
+    parser.add_argument("--d_ff", type=int, default=512)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--val_ratio", type=float, default=0.2)
@@ -142,6 +144,14 @@ def setup_logging(base_log_dir, current_date, current_time):
     logging.info(f"📁 Training logs: {training_logfile}")
     logging.info(f"📁 MLflow logs:   {mlflow_logfile}")
     return date_dir, training_logfile, mlflow_logfile
+
+def log_training_parameters(config: dict):
+    logging.info("=" * 80)
+    logging.info("TRAINING CONFIGURATION / HYPERPARAMETERS")
+    logging.info("=" * 80)
+    for k,v in config.items():
+        logging.info(f"{k:20s} = {v}")
+    logging.info("=" * 80)
 
 
 # ===========================================================
@@ -218,6 +228,8 @@ def run():
 
     current_date, current_time = config["date"], config["time"]
 
+    # === log the hyperparameters ===
+    log_training_parameters(config)
     # === MLFLOW LOGGER ===
     project_name = f"[{current_date}] MeteoTransformer"
     run_name = f"{current_time}"
@@ -315,10 +327,14 @@ def run():
     logging.info(f"📂 Checkpoints saved in: {checkpoint_dir}")
     logging.info(f"📝 Training log: {training_log}")
     logging.info(f"🧪 MLflow log: {mlflow_log}")
+    try: end_run()
+    except: pass
 
 # ===========================================================
 if __name__ == "__main__":
     run()
+    time.sleep(0.5)
+    sys.exit(0)
 
 # nohup python Train.py --gpu 0 --epochs 20 > logs/$(date +"%Y%m%d_%H%M%S")_train.log 2>&1 &
 # nohup mlflow ui --port 5000 > logs/$(date +"%Y%m%d_%H%M%S")_mlflow.log 2>&1 &

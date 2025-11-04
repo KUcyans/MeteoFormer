@@ -30,16 +30,13 @@ TIME=${STAMP:9}
 echo "🕒 Using timestamp: $STAMP"
 mkdir -p logs/${DATE}
 
-SHELL_LOG="logs/${DATE}/${STAMP}_shell.log"
-echo "📁 Shell log: $SHELL_LOG"
+PYTHON_STDOUT="logs/${DATE}/${DATE}_${TIME}_stdout.log"
 
 nohup python Train.py \
   --gpu 0 \
   --epochs 20 \
   --date $DATE \
   --time $TIME \
-  > $SHELL_LOG 2>&1 &
-
+  > "$PYTHON_STDOUT" 2>&1 &
 
 echo "🚀 Training started (PID: $!)"
-echo "   Log file: logs/${STAMP}_train.log"
