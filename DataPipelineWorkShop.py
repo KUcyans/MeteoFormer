@@ -539,12 +539,9 @@ class MeteoDatasetModule(LightningDataModule):
         self.val_dataset = MeteoDataset(df_val, self.ctx.forecast, self.ctx.preprocessing)
         self.test_dataset = MeteoDataset(df_test, self.ctx.forecast, self.ctx.preprocessing)
 
-
-
     # ===========================================================
     def setup_prediction(self, data_future: pd.DataFrame):
         self.pred_dataset = MeteoDataset(data_future, self.ctx.forecast, self.ctx.preprocessing)
-
 
     # ===========================================================
     def train_dataloader(self):
@@ -581,6 +578,11 @@ class MeteoDatasetModule(LightningDataModule):
         )
 
     def _get_available_features(self):
-        return self.train_dataset._get_available_features()
+        if self.train_dataset is not None:
+            return self.train_dataset._get_available_features()
+        if hasattr(self, "pred_dataset") and self.pred_dataset is not None:
+            return self.pred_dataset._get_available_features()
+        raise RuntimeError("No dataset available to query feature list")
+
 
 

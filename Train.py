@@ -12,18 +12,14 @@ import os
 import sys
 import torch
 import logging
+import json
 from datetime import datetime
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, TQDMProgressBar
-from pytorch_lightning.loggers import MLFlowLogger
-from mlflow import end_run
 from meteostat import Point
 from DataPipelineWorkShop import get_hourly_example, MeteoDatasetModule, PreprocessingContext, ForecastContext, ModelContext, ExperimentContext
 from VanillaTransformer import MeteoVanillaTransformerEncoder
 import pandas as pd
-# from contexts import PreprocessingContext, ForecastContext, ModelContext, ExperimentContext
-
-
 import warnings
 
 # Suppress noisy PyTorch warnings
@@ -41,7 +37,7 @@ def suppress_runtime_warnings():
     )
     warnings.filterwarnings(
         "ignore",
-        message=r".*A module that was compiled using NumPy 1\.x cannot be run in NumPy 2.*",
+        message=r".*A module that was compiled using NumPy 1\.x.*",
         category=UserWarning,
     )
     warnings.filterwarnings(
@@ -68,6 +64,37 @@ def suppress_runtime_warnings():
     # warnings.filterwarnings("ignore", category=UserWarning)
 
     logging.info("🔇 Non-critical runtime warnings suppressed.")
+
+# ===========================================================
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train Transformer on Meteostat data")
+    parser.add_argument("--gpu", nargs="+", default=[], help="List of GPU IDs to use")
+    parser.add_argument("--window_size", type=int, default=24)
+    parser.add_argument("--horizon", type=int, default=12)
+    parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--num_layers", type=int, default=4)
+    parser.add_argument("--n_heads", type=int, default=2)
+    parser.add_argument("--d_model", type=int, default=128)
+    parser.add_argument("--d_ff", type=int, default=512)
+    parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--val_ratio", type=float, default=0.2)
+    parser.add_argument("--test_ratio", type=float, default=0.1)
+    parser.add_argument(
+        "--target_features",
+        nargs="+",
+        default=["temp", "rhum", "prcp", "wspd", "sin_wdir", "cos_wdir"],
+        help="List of target feature names to predict"
+    )
+    parser.add_argument("--log_dir", type=str, default="./logs")
+    parser.add_argument("--date", type=str, required=True, help="Execution date in YYYYMMDD format")
+    parser.add_argument("--time", type=str, required=True, help="Execution time in HHMMSS format")
+    parser.add_argument("--tracker", type=str, default="none",
+        choices=["wandb", "mlflow", "none"],
+        help="Experiment tracker backend to use."
+    )
+
+    return vars(parser.parse_args())
 
 # ===========================================================
 def lock_and_load(config):
@@ -98,41 +125,16 @@ def lock_and_load(config):
     return device
 
 # ===========================================================
-def parse_args():
-    parser = argparse.ArgumentParser(description="Train Transformer on Meteostat data")
-    parser.add_argument("--gpu", nargs="+", default=[], help="List of GPU IDs to use")
-    parser.add_argument("--window_size", type=int, default=24)
-    parser.add_argument("--horizon", type=int, default=12)
-    parser.add_argument("--batch_size", type=int, default=128)
-    parser.add_argument("--num_layers", type=int, default=4)
-    parser.add_argument("--n_heads", type=int, default=2)
-    parser.add_argument("--d_model", type=int, default=128)
-    parser.add_argument("--d_ff", type=int, default=512)
-    parser.add_argument("--dropout", type=float, default=0.1)
-    parser.add_argument("--epochs", type=int, default=20)
-    parser.add_argument("--val_ratio", type=float, default=0.2)
-    parser.add_argument("--test_ratio", type=float, default=0.1)
-    parser.add_argument(
-        "--target_features",
-        nargs="+",
-        default=["temp", "rhum", "prcp", "wspd", "sin_wdir", "cos_wdir"],
-        help="List of target feature names to predict"
-    )
-    parser.add_argument("--data_dir", type=str, default="./data")
-    parser.add_argument("--log_dir", type=str, default="./logs")
-    parser.add_argument("--date", type=str, required=True, help="Execution date in YYYYMMDD format")
-    parser.add_argument("--time", type=str, required=True, help="Execution time in HHMMSS format")
-    return vars(parser.parse_args())
-
-
-# ===========================================================
-def setup_logging(base_log_dir, current_date, current_time):
+def setup_logging(base_log_dir, current_date, current_time, tracker):
     """Create timestamped logging directories and log files based on provided date and time."""
-    date_dir = os.path.join(base_log_dir, current_date)
-    os.makedirs(date_dir, exist_ok=True)
+    date_time_dir = os.path.join(base_log_dir, current_date, current_time)
+    os.makedirs(date_time_dir, exist_ok=True)
+    # ./log/20251103/123456/
 
-    training_logfile = os.path.join(date_dir, f"{current_date}_{current_time}_training.log")
-    mlflow_logfile = os.path.join(date_dir, f"{current_date}_{current_time}_mlflow.log")
+    training_logfile = os.path.join(date_time_dir, f"{current_date}_{current_time}_training.log")
+    # ./log/20251103/123456/20251103_123456_training.log
+    tracker_logfile = os.path.join(date_time_dir, f"{current_date}_{current_time}_{tracker}.log")
+    # ./log/20251103/123456/20251103_123456_<tracker>.log
 
     logging.basicConfig(
         filename=training_logfile,
@@ -142,8 +144,8 @@ def setup_logging(base_log_dir, current_date, current_time):
     )
 
     logging.info(f"📁 Training logs: {training_logfile}")
-    logging.info(f"📁 MLflow logs:   {mlflow_logfile}")
-    return date_dir, training_logfile, mlflow_logfile
+    logging.info(f"📁 {tracker} logs:   {tracker_logfile}")
+    return date_time_dir, training_logfile, tracker_logfile
 
 def log_training_parameters(config: dict):
     logging.info("=" * 80)
@@ -218,35 +220,7 @@ def write_benchmark_summary(start_time, end_time, trainer, config, log_file_path
         f.write(summary_text)
 
 # ===========================================================
-def run():
-    suppress_runtime_warnings()
-    config = parse_args()
-    device = lock_and_load(config)
-    log_dir, training_log, mlflow_log = setup_logging(
-        config["log_dir"], config["date"], config["time"]
-    )
-
-    current_date, current_time = config["date"], config["time"]
-
-    # === log the hyperparameters ===
-    log_training_parameters(config)
-    # === MLFLOW LOGGER ===
-    project_name = f"[{current_date}] MeteoTransformer"
-    run_name = f"{current_time}"
-
-    mlf_logger = MLFlowLogger(
-        experiment_name=project_name,
-        run_name=run_name,
-        tracking_uri="http://127.0.0.1:5000"
-    )
-    mlf_logger.log_hyperparams(config)
-
-    # === Example data ===
-    logging.info("🌍 Fetching Meteostat hourly data for Copenhagen...")
-    kbh = Point(lat=55.6761, lon=12.5683)
-    df_raw = get_hourly_example(kbh, start=datetime(2015, 1, 1), end=datetime(2018, 12, 31))
-    
-    # context objects
+def build_contexts(config, log_dir):
     pre_ctx = PreprocessingContext()
     fc_ctx = ForecastContext(
         window=config["window_size"],
@@ -261,13 +235,71 @@ def run():
         num_layers=config["num_layers"],
         dropout=config["dropout"]
     )
-    
-    # complex context object
     exp_ctx = ExperimentContext(
         preprocessing=pre_ctx,
         forecast=fc_ctx,
         model=model_ctx
     )
+    ctx_json_path = os.path.join(log_dir, f"{config["date"]}_{config["time"]}_context.json")
+    with open(ctx_json_path, "w") as f:
+        json.dump({
+            "preprocessing": vars(pre_ctx),
+            "forecast"     : vars(fc_ctx),
+            "model"        : vars(model_ctx),
+            "target_features": config["target_features"],
+        }, f, indent=2)
+
+    return fc_ctx, model_ctx, exp_ctx
+
+# ===========================================================
+
+def setup_and_get_wandb_logger(config, project_name, run_name):
+    import wandb
+    from pytorch_lightning.loggers import WandbLogger
+    wandb.init(project=project_name, config=config, name=run_name)
+    wandb_logger = WandbLogger(project=project_name, config=config)
+    return wandb_logger
+
+def setup_and_get_mlflow_logger(config, project_name, run_name):
+    from pytorch_lightning.loggers import MLFlowLogger
+    mlf_logger = MLFlowLogger(
+        experiment_name=project_name,
+        run_name=run_name,
+        tracking_uri="http://127.0.0.1:5000"
+    )
+    mlf_logger.log_hyperparams(config)
+    return mlf_logger
+
+# ===========================================================
+def run():
+    suppress_runtime_warnings()
+    config = parse_args()
+    device = lock_and_load(config)
+    current_date, current_time = config["date"], config["time"]
+    log_dir, training_log, tracker_log = setup_logging(
+        config["log_dir"], current_date, current_time, config["tracker"]
+    )
+
+    # === log the hyperparameters ===
+    log_training_parameters(config)
+    # === Experimental Tracker LOGGER ===
+    project_name = f"[{current_date}] MeteoTransformer"
+    run_name = f"{current_time}"
+
+    if config["tracker"] == "wandb":
+        logger = setup_and_get_wandb_logger(config, project_name, run_name)
+    elif config["tracker"] == "mlflow":
+        logger = setup_and_get_mlflow_logger(config, project_name, run_name)
+    else:  # none
+        logger = None
+
+    # === Example data ===
+    logging.info("🌍 Fetching Meteostat hourly data for Copenhagen...")
+    kbh = Point(lat=55.6761, lon=12.5683)
+    df_raw = get_hourly_example(kbh, start=datetime(2013, 1, 1), end=datetime(2018, 12, 31))
+    
+    # context objects
+    fc_ctx, model_ctx, exp_ctx = build_contexts(config, log_dir)
 
     logging.info("📦 Building DataModule...")
     dm = MeteoDatasetModule(
@@ -287,10 +319,10 @@ def run():
         model_ctx=model_ctx,
         forecast_ctx=fc_ctx,
         input_features=available_feature_list,
-        target_features=config["target_features"]
+        target_features=config["target_features"],
     )
 
-    checkpoint_dir = os.path.join(log_dir, f"{current_date}_{current_time}_checkpoints")
+    checkpoint_dir = os.path.join(log_dir, "checkpoints")
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     checkpoint_callback = ModelCheckpoint(
@@ -298,7 +330,8 @@ def run():
         filename="epoch{epoch:02d}-val_loss{val_loss:.4f}",
         save_top_k=1,
         monitor="val_loss",
-        mode="min"
+        mode="min", 
+        save_last=True,
     )
     early_stopping = EarlyStopping(monitor="val_loss", patience=5, mode="min")
 
@@ -312,7 +345,7 @@ def run():
         default_root_dir=checkpoint_dir,
         log_every_n_steps=20,
         deterministic=True,
-        logger=mlf_logger,
+        logger=logger,
         precision="bf16-mixed" if torch.cuda.is_available() else 32,
         gradient_clip_val=1.0,
         gradient_clip_algorithm="norm",
@@ -326,9 +359,11 @@ def run():
     logging.info("✅ Training complete.")
     logging.info(f"📂 Checkpoints saved in: {checkpoint_dir}")
     logging.info(f"📝 Training log: {training_log}")
-    logging.info(f"🧪 MLflow log: {mlflow_log}")
-    try: end_run()
-    except: pass
+    logging.info(f"🧪 {config['tracker']} log: {tracker_log}")
+    if config["tracker"] == "mlflow":
+        from mlflow import end_run
+        try: end_run()
+        except: pass
 
 # ===========================================================
 if __name__ == "__main__":
