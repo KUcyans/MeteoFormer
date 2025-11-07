@@ -281,7 +281,6 @@ class MeteoVanillaTransformerEncoder(LightningModule):
         # --- Loss ---
         self.loss_fn = nn.MSELoss()
 
-
     # ==============================================================
     def forward(self, x, mask=None):
         """

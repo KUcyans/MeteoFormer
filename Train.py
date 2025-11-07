@@ -4,24 +4,9 @@ train_meteo_transformer.py
 --------------------------
 Train a vanilla Transformer encoder for meteorological sequence-to-sequence forecasting.
 """
-
-import argparse
-from tabulate import tabulate
-import time
-import os
-import sys
-import torch
-import logging
-import json
-from datetime import datetime
-from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, TQDMProgressBar
-from meteostat import Point
-from DataPipelineWorkShop import get_hourly_example, MeteoDatasetModule, PreprocessingContext, ForecastContext, ModelContext, ExperimentContext
-from VanillaTransformer import MeteoVanillaTransformerEncoder
-import pandas as pd
 import warnings
-
+import pandas as pd
+import logging
 # Suppress noisy PyTorch warnings
 def suppress_runtime_warnings():
     """
@@ -64,6 +49,21 @@ def suppress_runtime_warnings():
     # warnings.filterwarnings("ignore", category=UserWarning)
 
     logging.info("🔇 Non-critical runtime warnings suppressed.")
+suppress_runtime_warnings()
+
+import argparse
+from tabulate import tabulate
+import time
+import os
+import sys
+import torch
+import json
+from datetime import datetime
+from pytorch_lightning import Trainer
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, TQDMProgressBar
+from meteostat import Point
+from DataPipelineWorkShop import get_hourly_example, PreprocessingContext, ForecastContext, ModelContext, ExperimentContext,  make_dataloaders
+from VanillaTransformer import MeteoVanillaTransformerEncoder
 
 # ===========================================================
 def parse_args():
@@ -302,16 +302,9 @@ def run():
     fc_ctx, model_ctx, exp_ctx = build_contexts(config, log_dir)
 
     logging.info("📦 Building DataModule...")
-    dm = MeteoDatasetModule(
-        data=df_raw,
-        ctx=exp_ctx,
-        batch_size=config["batch_size"],
-        num_workers=2,
-        shuffle_train=True
-    )
-
-    dm.setup()
-    available_feature_list = dm._get_available_features()
+    
+    train_dl, val_dl, test_dl = make_dataloaders(df_raw, exp_ctx, batch_size=config["batch_size"], num_workers=2)
+    available_feature_list = train_dl.dataset._get_available_features()
     logging.info(f"Available features: {available_feature_list}")
 
     logging.info("⚙️ Building model...")
@@ -353,20 +346,27 @@ def run():
 
     logging.info("🚀 Starting training...")
     start_time = time.time()
-    trainer.fit(model, datamodule=dm)
+    trainer.fit(model, train_dataloaders=train_dl, val_dataloaders=val_dl)
+
     end_time = time.time()
     write_benchmark_summary(start_time, end_time, trainer, config, training_log)
     logging.info("✅ Training complete.")
     logging.info(f"📂 Checkpoints saved in: {checkpoint_dir}")
     logging.info(f"📝 Training log: {training_log}")
     logging.info(f"🧪 {config['tracker']} log: {tracker_log}")
-    if config["tracker"] == "mlflow":
+    
+    if config["tracker"] == "wandb":
+        try:wandb.finish()
+        except:pass
+    elif config["tracker"] == "mlflow":
         from mlflow import end_run
         try: end_run()
         except: pass
 
 # ===========================================================
 if __name__ == "__main__":
+    warnings.filterwarnings("ignore")
+    suppress_runtime_warnings()
     run()
     time.sleep(0.5)
     sys.exit(0)

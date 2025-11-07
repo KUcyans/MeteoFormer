@@ -475,114 +475,74 @@ class MeteoDataset(Dataset):
 
         return x_tensor, y_tensor, x_mask, y_mask
 
-class MeteoDatasetModule(LightningDataModule):
+def temporal_split(df: pd.DataFrame, fc) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
-    Time-aware DataModule for Meteostat forecasting.
-    Prevents leakage by inserting temporal gaps between train, val, and test.
+    Pure chronological split with gap zones.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        full chronological dataframe (DatetimeIndex)
+    fc : ForecastContext
+        must contain: val_ratio, test_ratio, gap
+
+    Returns
+    -------
+    (df_train, df_val, df_test)
     """
+    n = len(df)
+    n_test = int(n * fc.test_ratio)
+    n_val  = int(n * fc.val_ratio)
+    n_train = n - n_val - n_test
 
-    def __init__(self, 
-                 data: pd.DataFrame, 
-                 ctx: ExperimentContext, 
-                 batch_size: int = 128, 
-                 num_workers: int = 2, 
-                 shuffle_train: bool = True):
-        super().__init__()
+    # compute gap boundaries
+    train_end = n_train - fc.gap
+    val_start = n_train + fc.gap
+    val_end   = n_train + n_val - fc.gap
+    test_start= n_train + n_val + fc.gap
 
-        self.data = data
-        self.ctx = ctx
-        self.batch_size = batch_size
-        self.num_workers = num_workers
-        self.shuffle_train = shuffle_train
-        self.train_dataset = None
-        self.val_dataset = None
-        self.test_dataset = None
+    # clamp boundaries defensively
+    train_end = max(train_end, 0)
+    val_start = min(val_start, n)
+    val_end   = min(val_end, n)
+    test_start= min(test_start, n)
 
-    # ===========================================================
-    def setup(self, stage: Optional[str] = None):
-        """
-        Chronologically split with optional 'gap' zones between splits.
-        Gaps ensure no window from training overlaps with validation/test data.
-        """
-        n = len(self.data)
-        fc = self.ctx.forecast
-        n_test = int(n * fc.test_ratio)
-        n_val = int(n * fc.val_ratio)
-        n_train = n - n_val - n_test
+    # slice
+    df_train = df.iloc[:train_end].copy()
+    df_val   = df.iloc[val_start:val_end].copy()
+    df_test  = df.iloc[test_start:].copy()
 
-        # compute gap indices (avoid overlap)
-        train_end = n_train - fc.gap
-        val_start = n_train + fc.gap
-        val_end = n_train + n_val - fc.gap
-        test_start = n_train + n_val + fc.gap
+    # Print shapes for REPL feedback
+    print(f"Split shapes → Train: {df_train.shape}, Val: {df_val.shape}, Test: {df_test.shape}")
 
-        # enforce boundaries
-        train_end = max(train_end, 0)
-        val_start = min(val_start, n)
-        val_end = min(val_end, n)
-        test_start = min(test_start, n)
+    # assert strict chronological non-overlap
+    if len(df_train) > 0 and len(df_val) > 0:
+        assert df_train.index.max() < df_val.index.min(), "Train–Val overlap"
+    if len(df_val) > 0 and len(df_test) > 0:
+        assert df_val.index.max() < df_test.index.min(), "Val–Test overlap"
 
-        # slice subsets
-        df_train = self.data.iloc[:train_end].copy()
-        df_val   = self.data.iloc[val_start:val_end].copy()
-        df_test  = self.data.iloc[test_start:].copy()
-
-        # sanity check (no overlap)
-        assert df_train.index.max() < df_val.index.min(), "Train–Val overlap detected!"
-        assert df_val.index.max() < df_test.index.min(), "Val–Test overlap detected!"
-
-        # instantiate datasets
-        # self.train_dataset = MeteoDataset(df_train, self.window_size, self.horizon)
-        # self.val_dataset = MeteoDataset(df_val, self.window_size, self.horizon)
-        # self.test_dataset = MeteoDataset(df_test, self.window_size, self.horizon)
-        self.train_dataset = MeteoDataset(df_train, self.ctx.forecast, self.ctx.preprocessing)
-        self.val_dataset = MeteoDataset(df_val, self.ctx.forecast, self.ctx.preprocessing)
-        self.test_dataset = MeteoDataset(df_test, self.ctx.forecast, self.ctx.preprocessing)
-
-    # ===========================================================
-    def setup_prediction(self, data_future: pd.DataFrame):
-        self.pred_dataset = MeteoDataset(data_future, self.ctx.forecast, self.ctx.preprocessing)
-
-    # ===========================================================
-    def train_dataloader(self):
-        return DataLoader(
-            self.train_dataset,
-            batch_size=self.batch_size,
-            shuffle=self.shuffle_train,
-            num_workers=self.num_workers,
-            drop_last=True,
-        )
-
-    def val_dataloader(self):
-        return DataLoader(
-            self.val_dataset,
-            batch_size=self.batch_size,
-            shuffle=False,
-            num_workers=self.num_workers,
-        )
-
-    def test_dataloader(self):
-        return DataLoader(
-            self.test_dataset,
-            batch_size=self.batch_size,
-            shuffle=False,
-            num_workers=self.num_workers,
-        )
-        
-    def predict_dataloader(self):
-        return DataLoader(
-            self.pred_dataset,
-            batch_size=self.batch_size,
-            shuffle=False,
-            num_workers=self.num_workers,
-        )
-
-    def _get_available_features(self):
-        if self.train_dataset is not None:
-            return self.train_dataset._get_available_features()
-        if hasattr(self, "pred_dataset") and self.pred_dataset is not None:
-            return self.pred_dataset._get_available_features()
-        raise RuntimeError("No dataset available to query feature list")
+    return df_train, df_val, df_test
 
 
+def make_datasets(df: pd.DataFrame, ctx: ExperimentContext):
+    df_train, df_val, df_test = temporal_split(df, ctx.forecast)   # a pure function, pure output
+    train_ds = MeteoDataset(df_train, ctx.forecast, ctx.preprocessing)
+    val_ds   = MeteoDataset(df_val,   ctx.forecast, ctx.preprocessing)
+    test_ds  = MeteoDataset(df_test,  ctx.forecast, ctx.preprocessing)
+    return train_ds, val_ds, test_ds
 
+
+def make_dataloaders(df: pd.DataFrame, ctx: ExperimentContext,batch_size: int=128, num_workers: int=2):
+    train_ds, val_ds, test_ds = make_datasets(df, ctx)
+    train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, drop_last=True)
+    val_dl   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    test_dl  = DataLoader(test_ds,  batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    return train_dl, val_dl, test_dl
+
+
+def make_predict_loader(df_future: pd.DataFrame, ctx: ExperimentContext,
+                        batch_size: int = 128, num_workers: int = 2):
+    pred_ds = MeteoDataset(df_future, ctx.forecast, ctx.preprocessing)
+    pred_dl = DataLoader(pred_ds, batch_size=batch_size,
+                         shuffle=False, num_workers=num_workers)
+    return pred_dl

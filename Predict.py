@@ -4,22 +4,10 @@ Predict.py
 ----------
 Load ALL checkpoints from a given run and run inference on future Meteostat data.
 """
-
-import argparse
-import logging
-import os
-import json
-from datetime import datetime
-import torch
-from pytorch_lightning import Trainer
-from meteostat import Point
-from DataPipelineWorkShop import MeteoDatasetModule, get_hourly_example, PreprocessingContext, ForecastContext, ModelContext, ExperimentContext
-from VanillaTransformer import MeteoVanillaTransformerEncoder
-import numpy as np
-import pandas as pd
 import warnings
-
-# ===========================================================
+import pandas as pd
+import logging
+# Suppress noisy PyTorch warnings
 def suppress_runtime_warnings():
     """
     Suppress known non-critical runtime warnings from NumPy, PyTorch, and pandas.
@@ -61,6 +49,17 @@ def suppress_runtime_warnings():
     # warnings.filterwarnings("ignore", category=UserWarning)
 
     logging.info("🔇 Non-critical runtime warnings suppressed.")
+suppress_runtime_warnings()
+
+import argparse
+import os
+import json
+from datetime import datetime
+import torch
+from pytorch_lightning import Trainer
+from meteostat import Point
+from DataPipelineWorkShop import get_hourly_example, PreprocessingContext, ForecastContext, ModelContext, ExperimentContext, make_predict_loader
+from VanillaTransformer import MeteoVanillaTransformerEncoder
 
 # ===========================================================
 def parse_args():
@@ -149,7 +148,6 @@ def get_contexts(config, log_dir):
     
 # ===========================================================
 def run():
-    suppress_runtime_warnings()
     config = parse_args()
     date_time_dir = os.path.join(config["log_dir"], config["date"], config["time"])
     os.makedirs(date_time_dir, exist_ok=True)
@@ -160,24 +158,17 @@ def run():
     # contex
     exp_ctx, target_features = get_contexts(config, date_time_dir)
 
-    # attach prediction dataset
-    dm = MeteoDatasetModule(
-        data=None,
-        ctx=exp_ctx,
-        batch_size=config["batch_size"],
-    )
-    
     # fetch target future data
     kbh = Point(lat=55.6761, lon=12.5683)
-    df_raw = get_hourly_example(kbh, start=datetime(2019, 6, 1), end=datetime(2019, 6, 3))
-    dm.setup_prediction(df_raw)
+    df_pred = get_hourly_example(kbh, start=datetime(2019, 6, 1), end=datetime(2019, 6, 3))
+    pred_dl = make_predict_loader(df_pred, exp_ctx, batch_size=128)
+    available_feature_list = pred_dl.dataset._get_available_features()
+    logging.info(f"Available features for prediction: {available_feature_list}")
 
     trainer = Trainer(accelerator="cpu")
 
     # create prediction output dir
-    current_date = datetime.now().strftime("%Y%m%d")
-    current_time = datetime.now().strftime("%H%M%S")
-    out_dir = os.path.join(date_time_dir, f"{current_date}_{current_time}_predictions")
+    out_dir = os.path.join(date_time_dir, "predictions")
     os.makedirs(out_dir, exist_ok=True)
 
     # run prediction for each checkpoint
@@ -187,23 +178,39 @@ def run():
             ckpt,
             model_ctx=exp_ctx.model,
             forecast_ctx=exp_ctx.forecast,
-            input_features=dm._get_available_features(),
-            target_features=target_features,
+            input_features=available_feature_list,
+            target_features=target_features
         )
 
         model.eval()
 
-        preds_list = trainer.predict(model, datamodule=dm)
-        preds = torch.cat(preds_list, dim=0).cpu().numpy()
+        preds_list = trainer.predict(model, dataloaders=pred_dl)
 
-        # save to filename based on ckpt
-        base_name = os.path.basename(ckpt).replace(".ckpt", "")
-        file_path = os.path.join(out_dir, f"forecast_{base_name}.npy")
-        np.save(file_path, preds)
+        preds = torch.cat(preds_list, dim=0).cpu()
+        N, H, D = preds.shape
+        # N: number of samples, H: horizon, D: number of target features
 
-        print(f"✅ prediction complete for {base_name}, saved: {file_path}")
+        df_list = []
+        for i in range(N):
+            # preds[i] shape: (H, D)
+            df_i = pd.DataFrame(preds[i].tolist(), columns=target_features)
+            df_i.insert(0, "timestep_ahead", [f"t+{k+1}" for k in range(H)])
+            df_i.insert(0, "sample_id", i)
+            df_list.append(df_i)
+
+        df_out = pd.concat(df_list, ignore_index=True)
+
+        current_date = datetime.now().strftime("%Y%m%d")
+        current_time = datetime.now().strftime("%H%M%S")
+        file_path = os.path.join(out_dir, f"{current_date}_{current_time}.csv")
+
+        df_out.to_csv(file_path, index=False)
+
+        print(f"✅ prediction complete, saved: {file_path}")
 
 
 if __name__ == "__main__":
+    warnings.filterwarnings("ignore")
+    suppress_runtime_warnings()
     logging.basicConfig(level=logging.INFO)
     run()
