@@ -45,7 +45,6 @@ class PreprocessingContext:
     categorical_mode: str = "embedding"
 
     def build(self):
-        from DataPipelineWorkShop import MeteoPreprocessor
         return MeteoPreprocessor(self.use_cyclic, self.categorical_mode)
 
 @dataclass(frozen=True)
@@ -140,6 +139,28 @@ class CyclicConversion:
             df = df.drop(columns=['wdir'], errors='ignore')
 
         return df
+    
+    def inverse_transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+
+        # angle reconstruction
+        if self.add_time:
+            # hours
+            df['hour'] = (np.degrees(np.arctan2(df['sin_hour'],df['cos_hour'])) / 360 * 24) % 24
+            df['dayofweek'] = (np.degrees(np.arctan2(df['sin_week'],df['cos_week'])) / 360 * 7) % 7
+            df['dayofyear'] = (np.degrees(np.arctan2(df['sin_year'],df['cos_year'])) / 360 * 365) % 365
+
+            df = df.drop(columns=[
+                'sin_hour','cos_hour',
+                'sin_week','cos_week',
+                'sin_year','cos_year'
+            ], errors='ignore')
+
+        if self.add_angle:
+            df['wdir'] = (np.degrees(np.arctan2(df['sin_wdir'],df['cos_wdir'])) % 360)
+            df = df.drop(columns=['sin_wdir','cos_wdir'], errors='ignore')
+
+        return df
 
 # ==============================================================
 class PseudoNormaliser:
@@ -208,6 +229,21 @@ class PseudoNormaliser:
         df[nan_mask] = np.nan
 
         # Do NOT fill NaNs — they’ll be handled later through masking
+        return df
+    
+    def inverse_transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+
+        for col,(shift,scale) in self.scale_shift.items():
+            if col in df.columns:
+                df[col] = df[col] * scale + shift
+
+        for col,(offset,zero_val) in self.log_transform.items():
+            if col in df.columns:
+                x = df[col]
+                out = np.where(x==zero_val, 0, (10**x) - offset )
+                df[col] = out
+
         return df
 
 # ==============================================================    
@@ -287,6 +323,19 @@ class CategoricalEncoder:
             raise ValueError("method must be either 'onehot' or 'embedding'")
 
         return df
+    
+    def inverse_transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+
+        if self.method == 'onehot' and self.onehot_columns is not None:
+            # inverse onehot -> coco
+            oh = df[self.onehot_columns].values
+            coco = oh.argmax(axis=1).astype("Int64")
+            df[self.column] = coco
+            df = df.drop(columns=self.onehot_columns, errors='ignore')
+
+        # embedding mode: already integer; nothing to do
+        return df
 
 # ==============================================================
 class MeteoPreprocessor:
@@ -303,33 +352,20 @@ class MeteoPreprocessor:
         self.encoder = CategoricalEncoder(method=categorical_mode)
         self.scaler = PseudoNormaliser()
 
-    def transform(self, data):
-        """Apply transformations, supporting both pandas and numpy input."""
-        if isinstance(data, pd.DataFrame):
-            df = data.copy()
-            if self.cyclic:
-                df = self.cyclic.transform(df)
-            df = self.encoder.transform(df)
-            df = self.scaler.transform(df)
-            return df
+    def transform(self, df):
+        df = self.cyclic.transform(df)
+        df = self.encoder.transform(df)
+        df = self.scaler.transform(df)
+        return df
+    
+    def inverse_transform(self, df):
+        df = self.scaler.inverse_transform(df)
+        df = self.encoder.inverse_transform(df)
+        df = self.cyclic.inverse_transform(df)
+        return df
 
-        elif isinstance(data, np.ndarray):
-            # Only apply numeric scaling on numpy arrays (fast path)
-            return self._transform_numpy(data)
-
-        else:
-            raise TypeError("Input must be pandas.DataFrame or numpy.ndarray")
-
-    def _transform_numpy(self, arr: np.ndarray) -> np.ndarray:
-        """Fast-path numeric-only transformation for numpy arrays."""
-        # Example: apply fixed scaling assuming same column order as training
-        # For simplicity, use global constants from PseudoNormaliser
-        arr = arr.copy()
-        # You can implement constant-based scaling here
-        return arr
-
-    def __call__(self, data):
-        return self.transform(data)
+    # def __call__(self, data):
+    #     return self.transform(data)
 
 # ==============================================================
 class MeteoDataset(Dataset):
@@ -394,7 +430,7 @@ class MeteoDataset(Dataset):
 
         # --- Apply preprocessing from context ---
         print("🧭 Applying in-dataset preprocessing...")
-        self.source_data = self.preprocessor(self.source_data)
+        self.source_data = self.preprocessor.transform(self.source_data)
 
         # --- Now drop metadata (AFTER preprocessing) ---
         for col in ['station', 'time']:

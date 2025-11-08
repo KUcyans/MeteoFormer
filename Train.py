@@ -71,7 +71,7 @@ def parse_args():
     parser.add_argument("--gpu", nargs="+", default=[], help="List of GPU IDs to use")
     parser.add_argument("--window_size", type=int, default=24)
     parser.add_argument("--horizon", type=int, default=12)
-    parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--num_layers", type=int, default=4)
     parser.add_argument("--n_heads", type=int, default=2)
     parser.add_argument("--d_model", type=int, default=128)
@@ -326,7 +326,7 @@ def run():
         mode="min", 
         save_last=True,
     )
-    early_stopping = EarlyStopping(monitor="val_loss", patience=5, mode="min")
+    early_stopping = EarlyStopping(monitor="val_loss", patience=10, mode="min")
 
     progressbar = TQDMProgressBar(refresh_rate=50)
     

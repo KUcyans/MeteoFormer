@@ -160,7 +160,7 @@ def run():
 
     # fetch target future data
     kbh = Point(lat=55.6761, lon=12.5683)
-    df_pred = get_hourly_example(kbh, start=datetime(2019, 6, 1), end=datetime(2019, 6, 3))
+    df_pred = get_hourly_example(kbh, start=datetime(2019, 6, 1), end=datetime(2019, 6, 2))
     pred_dl = make_predict_loader(df_pred, exp_ctx, batch_size=128)
     available_feature_list = pred_dl.dataset._get_available_features()
     logging.info(f"Available features for prediction: {available_feature_list}")
@@ -191,11 +191,15 @@ def run():
         # N: number of samples, H: horizon, D: number of target features
 
         df_list = []
-        for i in range(N):
-            # preds[i] shape: (H, D)
+        for i in range(N): # i being the index of windows
+            # the timestamp of the last observed hour of this sample
+            base_time = df_pred.index[i]
+
+            future_times = [base_time + pd.Timedelta(hours=k+1) for k in range(H)]
+
             df_i = pd.DataFrame(preds[i].tolist(), columns=target_features)
-            df_i.insert(0, "timestep_ahead", [f"t+{k+1}" for k in range(H)])
-            df_i.insert(0, "sample_id", i)
+            df_i.insert(0, "time", future_times)
+            df_i.insert(0, "window", i)
             df_list.append(df_i)
 
         df_out = pd.concat(df_list, ignore_index=True)

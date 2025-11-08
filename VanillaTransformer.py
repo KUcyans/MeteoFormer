@@ -375,9 +375,8 @@ class MeteoVanillaTransformerEncoder(LightningModule):
         self.log("train_loss", loss)
 
         # --- Periodic printing (every ~1/3 of an epoch) ---
-        if self.trainer is not None and hasattr(self.trainer, "datamodule"):
-            train_loader = self.trainer.datamodule.train_dataloader()
-            period = max(100, len(train_loader) // 3)
+        if self.trainer is not None and self.trainer.train_dataloader is not None:
+            period = max(100, len(self.trainer.train_dataloader) // 3)
             if batch_idx % period == 0:
                 current_lr = self.trainer.optimizers[0].param_groups[0]["lr"]
                 logging.info(f"\n[Epoch {self.current_epoch} | Batch {batch_idx}]")
@@ -394,12 +393,8 @@ class MeteoVanillaTransformerEncoder(LightningModule):
         self.log("val_loss", loss, prog_bar=True)
 
         # --- Periodic validation printing ---
-        if self.trainer is not None and hasattr(self.trainer, "datamodule"):
-            try:
-                val_loader = self.trainer.datamodule.val_dataloader()
-                period = max(200, len(val_loader) // 3)
-            except Exception:
-                period = 200  # fallback for safety (e.g. during fast_dev_run)
+        if self.trainer is not None and self.trainer.val_dataloaders is not None:
+            period = max(200, len(self.trainer.val_dataloaders) // 3)
             if batch_idx % period == 0:
                 logging.info(f"\nValidation: Epoch {self.current_epoch}, Batch {batch_idx}")
                 logging.info(f"Val Loss: {loss.item():.6f}")
@@ -426,18 +421,16 @@ class MeteoVanillaTransformerEncoder(LightningModule):
         optimizer = torch.optim.AdamW(self.parameters(), lr=max_lr)
 
         # Compute total steps for OneCycleLR
-        steps_per_epoch = len(self.trainer.datamodule.train_dataloader())
-        total_steps = steps_per_epoch * self.trainer.max_epochs
-
+        total_steps = self.trainer.estimated_stepping_batches
         # OneCycleLR configuration
         scheduler = torch.optim.lr_scheduler.OneCycleLR(
             optimizer,
             max_lr=max_lr,
-            total_steps=self._total_steps(),
+            total_steps=total_steps,
             pct_start=0.1,          # fraction of cycle to reach max LR (default 0.3)
             anneal_strategy='cos',  # cosine annealing works well for transformers
             div_factor=25.0,        # initial LR = max_lr / div_factor
-            final_div_factor=1e2,   # min LR = max_lr / (div_factor * final_div_factor)
+            final_div_factor=1e2,    # min LR = max_lr / (div_factor * final_div_factor)
             three_phase=False
         )
 
@@ -451,7 +444,7 @@ class MeteoVanillaTransformerEncoder(LightningModule):
         }
     def _total_steps(self):
         try:
-            return len(self.trainer.datamodule.train_dataloader()) * self.trainer.max_epochs
+            return len(self.trainer.train_dataloader) * self.trainer.max_epochs
         except Exception:
             # fallback estimate (useful for debugging or unit tests)
             return 1000
