@@ -141,21 +141,10 @@ class CyclicConversion:
         return df
     
     def inverse_transform(self, df: pd.DataFrame) -> pd.DataFrame:
-        df = df.copy()
-
-        # angle reconstruction
-        if self.add_time:
-            # hours
-            df['hour'] = (np.degrees(np.arctan2(df['sin_hour'],df['cos_hour'])) / 360 * 24) % 24
-            df['dayofweek'] = (np.degrees(np.arctan2(df['sin_week'],df['cos_week'])) / 360 * 7) % 7
-            df['dayofyear'] = (np.degrees(np.arctan2(df['sin_year'],df['cos_year'])) / 360 * 365) % 365
-
-            df = df.drop(columns=[
-                'sin_hour','cos_hour',
-                'sin_week','cos_week',
-                'sin_year','cos_year'
-            ], errors='ignore')
-
+        df = df.copy()  
+        
+        # no temporal decoding needed (original time index preserved)
+        # --- Angular decoding 
         if self.add_angle:
             df['wdir'] = (np.degrees(np.arctan2(df['sin_wdir'],df['cos_wdir'])) % 360)
             df = df.drop(columns=['sin_wdir','cos_wdir'], errors='ignore')

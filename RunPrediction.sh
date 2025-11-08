@@ -18,15 +18,17 @@ pkill -f "python3 Predict.py" || true
 sleep 1
 
 # ---- manual selection here ----
-DATE=20251107
-TIME=131556
+DATE=20251108
+TIME=140911
 # -------------------------------
+RUN_DATE=$(date +%Y%m%d)
+RUN_TIME=$(date +%H%M%S)
 
-echo "🕒 Predicting with timestamp: ${DATE} ${TIME}"
+echo "🕒 Predicting with checkpoint: ${DATE} ${TIME}"
+echo "🕒 Prediction run: ${RUN_DATE} ${RUN_TIME}"
 mkdir -p logs/${DATE}/${TIME}
 
-# PRED_STDOUT="logs/${DATE}/${DATE}_${TIME}_predict.log"
-PRED_STDOUT="logs/${DATE}/${TIME}/${DATE}_${TIME}_predict.log"
+PRED_STDOUT="logs/${DATE}/${TIME}/${RUN_DATE}_${RUN_TIME}_predict.log"
 
 nohup python3 Predict.py \
   --date $DATE \

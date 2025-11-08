@@ -160,7 +160,9 @@ def run():
 
     # fetch target future data
     kbh = Point(lat=55.6761, lon=12.5683)
-    df_pred = get_hourly_example(kbh, start=datetime(2019, 6, 1), end=datetime(2019, 6, 2))
+    df_pred = get_hourly_example(kbh, start=datetime(2019, 6, 1), end=datetime(2019, 6, 3))
+    if isinstance(df_pred.index, pd.PeriodIndex):
+        df_pred.index = df_pred.index.to_timestamp()
     pred_dl = make_predict_loader(df_pred, exp_ctx, batch_size=128)
     available_feature_list = pred_dl.dataset._get_available_features()
     logging.info(f"Available features for prediction: {available_feature_list}")
