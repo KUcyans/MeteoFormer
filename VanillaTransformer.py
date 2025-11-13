@@ -417,7 +417,7 @@ class MeteoVanillaTransformerEncoder(LightningModule):
 
 
     def configure_optimizers(self):
-        max_lr = 1e-4
+        max_lr = 3e-4
         optimizer = torch.optim.AdamW(self.parameters(), lr=max_lr)
 
         # Compute total steps for OneCycleLR

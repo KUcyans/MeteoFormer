@@ -53,6 +53,7 @@ suppress_runtime_warnings()
 
 import argparse
 import os
+import re
 import json
 from datetime import datetime
 import torch
@@ -145,10 +146,39 @@ def get_contexts(config, log_dir):
         model=model_ctx
     )
     return exp_ctx, target_features
-    
+
+# ===========================================================
+def make_single_window_dataframe(location: Point, 
+                                 start_time: datetime, 
+                                 exp_ctx: ExperimentContext) -> pd.DataFrame:
+    """
+    Construct a minimal Meteostat dataframe covering exactly one forecasting window.
+
+    Args:
+        location (Point): Meteostat location object.
+        start_time (datetime): End of the observation window (the forecast will start right after this).
+        exp_ctx (ExperimentContext): Contains forecast.window and forecast.horizon.
+    """
+    fc = exp_ctx.forecast
+    window_hours = fc.window
+    horizon_hours = fc.horizon
+
+    # Fetch data covering just enough history for one forecast
+    history_start = start_time - pd.Timedelta(hours=window_hours)
+    history_end   = start_time + pd.Timedelta(hours=horizon_hours)
+
+    df = get_hourly_example(location, history_start, history_end)
+
+    # Defensive timestamp conversion
+    if isinstance(df.index, pd.PeriodIndex):
+        df.index = df.index.to_timestamp()
+
+    return df
+
 # ===========================================================
 def run():
     config = parse_args()
+    device = lock_and_load(config)
     date_time_dir = os.path.join(config["log_dir"], config["date"], config["time"])
     os.makedirs(date_time_dir, exist_ok=True)
 
@@ -160,14 +190,26 @@ def run():
 
     # fetch target future data
     kbh = Point(lat=55.6761, lon=12.5683)
-    df_pred = get_hourly_example(kbh, start=datetime(2019, 6, 1), end=datetime(2019, 6, 3))
-    if isinstance(df_pred.index, pd.PeriodIndex):
-        df_pred.index = df_pred.index.to_timestamp()
-    pred_dl = make_predict_loader(df_pred, exp_ctx, batch_size=128)
+    start_time = datetime(2019, 6, 3, 0, 0)
+    df_single = make_single_window_dataframe(kbh, start_time, exp_ctx)
+    pred_dl = make_predict_loader(df_single, exp_ctx, batch_size=1)
+
     available_feature_list = pred_dl.dataset._get_available_features()
     logging.info(f"Available features for prediction: {available_feature_list}")
 
-    trainer = Trainer(accelerator="cpu")
+    if torch.cuda.is_available():
+        trainer = Trainer(
+            accelerator="gpu",
+            devices=device,          # or [0] if you want to be explicit
+            max_epochs=1
+        )
+    else:
+        trainer = Trainer(
+            accelerator="cpu",
+            devices=1,          # CPUAccelerator requires an int > 0
+            max_epochs=1
+        )
+
 
     # create prediction output dir
     out_dir = os.path.join(date_time_dir, "predictions")
@@ -186,32 +228,35 @@ def run():
 
         model.eval()
 
-        preds_list = trainer.predict(model, dataloaders=pred_dl)
+        preds = trainer.predict(model, dataloaders=pred_dl)
+        pred = torch.cat(preds, dim=0).cpu()   # shape (1, H, D)
+        pred = pred[0]                         # remove batch dimension → (H, D)
 
-        preds = torch.cat(preds_list, dim=0).cpu()
-        N, H, D = preds.shape
-        # N: number of samples, H: horizon, D: number of target features
+        # Identify base timestamp (last observed hour before forecast)
+        horizon = exp_ctx.forecast.horizon
+        base_time = df_single.index[exp_ctx.forecast.window - 1]
+        future_times = [base_time + pd.Timedelta(hours=k + 1) for k in range(horizon)]
 
-        df_list = []
-        for i in range(N): # i being the index of windows
-            # the timestamp of the last observed hour of this sample
-            base_time = df_pred.index[i]
+        # Construct output DataFrame
+        df_out = pd.DataFrame(pred.tolist(), columns=target_features)
+        df_out.insert(0, "time", future_times)
 
-            future_times = [base_time + pd.Timedelta(hours=k+1) for k in range(H)]
-
-            df_i = pd.DataFrame(preds[i].tolist(), columns=target_features)
-            df_i.insert(0, "time", future_times)
-            df_i.insert(0, "window", i)
-            df_list.append(df_i)
-
-        df_out = pd.concat(df_list, ignore_index=True)
-
+        # Save
         current_date = datetime.now().strftime("%Y%m%d")
         current_time = datetime.now().strftime("%H%M%S")
-        file_path = os.path.join(out_dir, f"{current_date}_{current_time}.csv")
+
+        ckpt_base = os.path.splitext(os.path.basename(ckpt))[0]
+
+        # Convert pattern like 'epoch=19-val_loss=0.1025' → 'epoch-19-val_loss-0.1025'
+        ckpt_tag = ckpt_base.replace("=", "-")
+
+        # Remove any accidental double dashes (just in case)
+        ckpt_tag = re.sub(r"-+", "-", ckpt_tag)
+
+        # Build final CSV path
+        file_path = os.path.join(out_dir, f"{current_date}_{current_time}_{ckpt_tag}.csv")
 
         df_out.to_csv(file_path, index=False)
-
         print(f"✅ prediction complete, saved: {file_path}")
 
 

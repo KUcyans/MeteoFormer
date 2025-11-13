@@ -566,7 +566,7 @@ def make_dataloaders(df: pd.DataFrame, ctx: ExperimentContext,batch_size: int=12
 
 
 def make_predict_loader(df_future: pd.DataFrame, ctx: ExperimentContext,
-                        batch_size: int = 128, num_workers: int = 2):
+                        batch_size: int, num_workers: int = 2):
     pred_ds = MeteoDataset(df_future, ctx.forecast, ctx.preprocessing)
     pred_dl = DataLoader(pred_ds, batch_size=batch_size,
                          shuffle=False, num_workers=num_workers)
