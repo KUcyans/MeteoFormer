@@ -50,18 +50,24 @@ def suppress_runtime_warnings():
 
     logging.info("🔇 Non-critical runtime warnings suppressed.")
 suppress_runtime_warnings()
-
+# ===========================================================
 import argparse
 import os
 import re
 import json
+import sys
 from datetime import datetime
 import torch
 from pytorch_lightning import Trainer
 from meteostat import Point
-from DataPipelineWorkShop import get_hourly_example, PreprocessingContext, ForecastContext, ModelContext, ExperimentContext, make_predict_loader
+from DataPipelineWorkShop import get_hourly_example, PreprocessingContext, ForecastContext, ModelContext, ExperimentContext, make_predict_loader, MeteoPreprocessor
 from VanillaTransformer import MeteoVanillaTransformerEncoder
-
+from matplotlib.backends.backend_pdf import PdfPages
+# ===========================================================
+import matplotlib.pyplot as plt
+sys.path.append('Utils/')
+from PlotUtils import setMplParam, getColour, getHistoParam 
+setMplParam()
 # ===========================================================
 def parse_args():
     p = argparse.ArgumentParser("Forecast future Meteo data using a trained Transformer")
@@ -71,7 +77,7 @@ def parse_args():
     p.add_argument("--window_size", type=int, default=24)
     p.add_argument("--horizon", type=int, default=12)
     p.add_argument("--batch_size", type=int, default=128)
-    p.add_argument("--log_dir", type=str, default="./logs")
+    p.add_argument("--log_dir", type=str, default="logs", help="Base logging directory")
 
     return vars(p.parse_args())
 
@@ -175,13 +181,114 @@ def make_single_window_dataframe(location: Point,
 
     return df
 
+
+# ===========================================================
+def build_model_signature(exp_ctx: ExperimentContext) -> str:
+    """
+    Build a short hyperparameter signature string from the context.
+    LR is intentionally left blank.
+    """
+    mc = exp_ctx.model
+    fc = exp_ctx.forecast
+
+    signature = (
+        f"b{mc.d_ff}_"
+        f"d{mc.d_model}_"
+        f"h{mc.n_heads}_"
+        f"l{mc.num_layers}_"
+        f"win{fc.window}_"
+        f"ho{fc.horizon}_"
+        f"lr"
+    )
+    return signature
+
+# ===========================================================
+def extract_val_loss(ckpt_path):
+    """
+    Extract val_loss from checkpoint filename.
+    Returns float('inf') if not found.
+    """
+    fname = os.path.basename(ckpt_path)
+    match = re.search(r"val_loss[=\-]?([0-9]*\.[0-9]+)", fname)
+    if match:
+        return float(match.group(1))
+    return float("inf")
+
+# ===========================================================
+def find_best_checkpoint(ckpt_list):
+    """
+    Return the checkpoint path with the smallest validation loss.
+    """
+    best_ckpt = None
+    best_loss = float("inf")
+
+    for ckpt in ckpt_list:
+        val_loss = extract_val_loss(ckpt)
+        if val_loss < best_loss:
+            best_loss = val_loss
+            best_ckpt = ckpt
+
+    return best_ckpt, best_loss
+
+# ===========================================================
+def save_pdf_for_checkpoint(
+    exp_ctx,
+    prediction_csv_path,
+    df_true_single,
+    output_dir,
+    features=["temp", "rhum", "wspd", "wdir"],
+):
+    # model signature
+    signature = build_model_signature(exp_ctx)
+    pdf_path = os.path.join(output_dir, f"{signature}.pdf")
+
+    print(f"📄 Saving PDF to: {pdf_path}")
+
+    # load pred CSV
+    df_pred = pd.read_csv(prediction_csv_path)
+    processor = MeteoPreprocessor(
+        use_cyclic=exp_ctx.preprocessing.use_cyclic,
+        categorical_mode=exp_ctx.preprocessing.categorical_mode
+    )
+    df_pred = processor.inverse_transform(df_pred)
+
+    if "time" in df_pred.columns:
+        df_pred["time"] = pd.to_datetime(df_pred["time"])
+        df_pred = df_pred.set_index("time")
+
+    df_true = df_true_single.copy()
+    if "time" in df_true.columns:
+        df_true["time"] = pd.to_datetime(df_true["time"])
+        df_true = df_true.set_index("time")
+
+    # write PDF
+    with PdfPages(pdf_path) as pdf:
+        for feature in features:
+            fig, ax = plt.subplots(figsize=(18, 6))
+
+            df_true[feature].plot(ax=ax, label="True", linewidth=2)
+            df_pred[feature].plot(ax=ax, label="Prediction", linestyle="--")
+
+            ax.set_title(f"{signature} — {feature}")
+            ax.set_ylabel(feature)
+            ax.set_xlabel("Time")
+            ax.legend()
+            plt.tight_layout()
+
+            pdf.savefig(fig)
+            plt.close(fig)
+
+    print(f"✔ PDF saved: {pdf_path}")
+
 # ===========================================================
 def run():
     config = parse_args()
     device = lock_and_load(config)
     date_time_dir = os.path.join(config["log_dir"], config["date"], config["time"])
     os.makedirs(date_time_dir, exist_ok=True)
-
+    prediction_dir = os.path.join("prediction", config["date"], config["time"])
+    os.makedirs(prediction_dir, exist_ok=True)
+    
     # checkpoints
     ckpts = get_checkpoints(config)
 
@@ -210,12 +317,8 @@ def run():
             max_epochs=1
         )
 
-
-    # create prediction output dir
-    out_dir = os.path.join(date_time_dir, "predictions")
-    os.makedirs(out_dir, exist_ok=True)
-
     # run prediction for each checkpoint
+    prediction_csvs = {}
     for ckpt in ckpts:
         logging.info(f"running prediction using checkpoint: {ckpt}")
         model = MeteoVanillaTransformerEncoder.load_from_checkpoint(
@@ -254,11 +357,23 @@ def run():
         ckpt_tag = re.sub(r"-+", "-", ckpt_tag)
 
         # Build final CSV path
-        file_path = os.path.join(out_dir, f"{current_date}_{current_time}_{ckpt_tag}.csv")
+        file_path = os.path.join(prediction_dir, f"{current_date}_{current_time}_{ckpt_tag}.csv")
+        prediction_csvs[ckpt] = file_path
 
         df_out.to_csv(file_path, index=False)
         print(f"✅ prediction complete, saved: {file_path}")
+    # best_ckpt, best_loss = find_best_checkpoint(list(prediction_csvs.keys()))
+    # best_csv = prediction_csvs[best_ckpt]
 
+    # print(f"📘 Best checkpoint: {best_ckpt} (val_loss={best_loss})")
+    # print(f"📄 Best CSV: {best_csv}")
+
+    # save_pdf_for_checkpoint(
+    #     exp_ctx=exp_ctx,
+    #     prediction_csv_path=best_csv,
+    #     df_true_single=df_single,
+    #     output_dir=prediction_dir,
+    # )
 
 if __name__ == "__main__":
     warnings.filterwarnings("ignore")
