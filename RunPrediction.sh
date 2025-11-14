@@ -19,7 +19,7 @@ sleep 1
 
 # ---- manual selection here ----
 DATE=20251114
-TIME=132736
+TIME=144305
 # -------------------------------
 RUN_DATE=$(date +%Y%m%d)
 RUN_TIME=$(date +%H%M%S)
