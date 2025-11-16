@@ -68,8 +68,8 @@ from VanillaTransformer import MeteoVanillaTransformerEncoder
 # ===========================================================
 def parse_args():
     parser = argparse.ArgumentParser(description="Train Transformer on Meteostat data")
-    parser.add_argument("--gpu", nargs="+", default=[], help="List of GPU IDs to use")
-    parser.add_argument("--window_size", type=int, default=24)
+    parser.add_argument("--gpu", nargs="+", type=int, default=[], help="List of GPU IDs to use")
+    parser.add_argument("--window_size", type=int, default=48)
     parser.add_argument("--horizon", type=int, default=12)
     parser.add_argument("--batch_size", type=int, default=512)
     parser.add_argument("--num_layers", type=int, default=4)
@@ -77,7 +77,7 @@ def parse_args():
     parser.add_argument("--d_model", type=int, default=64)
     parser.add_argument("--d_ff", type=int, default=256)
     parser.add_argument("--dropout", type=float, default=0.1)
-    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--val_ratio", type=float, default=0.2)
     parser.add_argument("--test_ratio", type=float, default=0.1)
     parser.add_argument(
@@ -98,31 +98,28 @@ def parse_args():
 
 # ===========================================================
 def lock_and_load(config):
-    """Set CUDA device based on config['gpu'] if available, else use CPU."""
-    logging.info(f"torch.cuda.is_available(): {torch.cuda.is_available()}")
+    """Detect if GPU should be used and optionally set cuda device. Returns gpu_enabled flag."""
+    gpu_available = torch.cuda.is_available()
+    logging.info(f"torch.cuda.is_available(): {gpu_available}")
     available_devices = list(range(torch.cuda.device_count()))
     logging.info(f"Available CUDA devices: {available_devices}")
 
-    if torch.cuda.is_available() and len(config.get("gpu", [])) > 0:
-        requested_gpus = config.get("gpu", [])
-        selected_gpu = int(requested_gpus[0]) if requested_gpus else 0
+    if gpu_available and config["gpu"]:
+        selected_gpu = config["gpu"][0]
 
         if selected_gpu in available_devices:
-            torch.cuda.empty_cache()
-            logging.info("🔥 LOCK AND LOAD! GPU ENGAGED! 🔥")
-            device = torch.device(f"cuda:{selected_gpu}")
             torch.cuda.set_device(selected_gpu)
+            torch.cuda.empty_cache()
             torch.set_float32_matmul_precision("highest")
-            logging.info(f"Using GPU: {selected_gpu} (cuda:{selected_gpu})")
+            logging.info(f"🔥 Using GPU: cuda:{selected_gpu}")
+            return True
         else:
-            logging.info(f"⚠️ Warning: GPU {selected_gpu} is not available. Using CPU instead.")
-            device = torch.device("cpu")
-    else:
-        device = torch.device("cpu")
-        logging.info("CUDA not available. Using CPU.")
+            logging.info(f"⚠️ GPU {selected_gpu} not found. Falling back to CPU.")
+            return False
 
-    logging.info(f"Selected device: {device}")
-    return device
+    logging.info("CUDA not available. Using CPU.")
+    return False
+
 
 # ===========================================================
 def setup_logging(base_log_dir, current_date, current_time, tracker):
@@ -240,7 +237,7 @@ def build_contexts(config, log_dir):
         forecast=fc_ctx,
         model=model_ctx
     )
-    ctx_json_path = os.path.join(log_dir, f"{config["date"]}_{config["time"]}_context.json")
+    ctx_json_path = os.path.join(log_dir, f"{config['date']}_{config['time']}_context.json")
     with open(ctx_json_path, "w") as f:
         json.dump({
             "preprocessing": vars(pre_ctx),

@@ -8,7 +8,8 @@ set -e
 mkdir -p logs
 
 # --- NEW: activate conda ----
-source /Users/yhjo/miniconda3/etc/profile.d/conda.sh
+# source /Users/yhjo/miniconda3/etc/profile.d/conda.sh
+source /home/cyan_white_tower/miniconda3/etc/profile.d/conda.sh
 conda activate tempestransformer
 # ----------------------------
 
@@ -41,7 +42,6 @@ PYTHON_STDOUT="logs/${DATE}/${TIME}/${DATE}_${TIME}_stdout.log"
 
 nohup python3 Train.py \
   --gpu 0 \
-  --epochs 20 \
   --date $DATE \
   --time $TIME \
   --tracker $TRACKER \
