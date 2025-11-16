@@ -420,7 +420,7 @@ class MeteoVanillaTransformerEncoder(LightningModule):
         max_lr = 3e-4
         optimizer = torch.optim.AdamW(self.parameters(), 
                                       lr=max_lr,
-                                    weight_decay=1e-4,
+                                    weight_decay=1e-3,
                                     betas=(0.9, 0.999))
 
         # Compute total steps for OneCycleLR
@@ -433,7 +433,7 @@ class MeteoVanillaTransformerEncoder(LightningModule):
             pct_start=0.1,          # fraction of cycle to reach max LR (default 0.3)
             anneal_strategy='cos',  # cosine annealing works well for transformers
             div_factor=25.0,        # initial LR = max_lr / div_factor
-            final_div_factor=1e2,    # min LR = max_lr / (div_factor * final_div_factor)
+            final_div_factor=5e1,    # min LR = max_lr / (div_factor * final_div_factor)
             three_phase=False
         )
 

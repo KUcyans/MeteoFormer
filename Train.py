@@ -69,14 +69,14 @@ from VanillaTransformer import MeteoVanillaTransformerEncoder
 def parse_args():
     parser = argparse.ArgumentParser(description="Train Transformer on Meteostat data")
     parser.add_argument("--gpu", nargs="+", type=int, default=[], help="List of GPU IDs to use")
-    parser.add_argument("--window_size", type=int, default=48)
+    parser.add_argument("--window_size", type=int, default=72)
     parser.add_argument("--horizon", type=int, default=12)
     parser.add_argument("--batch_size", type=int, default=512)
     parser.add_argument("--num_layers", type=int, default=4)
-    parser.add_argument("--n_heads", type=int, default=2)
+    parser.add_argument("--n_heads", type=int, default=4)
     parser.add_argument("--d_model", type=int, default=64)
     parser.add_argument("--d_ff", type=int, default=256)
-    parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument("--dropout", type=float, default=0.3)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--val_ratio", type=float, default=0.2)
     parser.add_argument("--test_ratio", type=float, default=0.1)
@@ -119,7 +119,6 @@ def lock_and_load(config):
 
     logging.info("CUDA not available. Using CPU.")
     return False
-
 
 # ===========================================================
 def setup_logging(base_log_dir, current_date, current_time, tracker):
@@ -271,7 +270,7 @@ def setup_and_get_mlflow_logger(config, project_name, run_name):
 def run():
     suppress_runtime_warnings()
     config = parse_args()
-    device = lock_and_load(config)
+    is_lock_and_loaded = lock_and_load(config)
     current_date, current_time = config["date"], config["time"]
     log_dir, training_log, tracker_log = setup_logging(
         config["log_dir"], current_date, current_time, config["tracker"]
@@ -293,14 +292,16 @@ def run():
     # === Example data ===
     logging.info("🌍 Fetching Meteostat hourly data for Copenhagen...")
     kbh = Point(lat=55.6761, lon=12.5683)
-    df_raw = get_hourly_example(kbh, start=datetime(2013, 1, 1), end=datetime(2018, 12, 31))
+    df_raw = get_hourly_example(kbh, start=datetime(1988, 1, 1), end=datetime(2018, 12, 31))
     
     # context objects
     fc_ctx, model_ctx, exp_ctx = build_contexts(config, log_dir)
 
     logging.info("📦 Building DataModule...")
     
-    train_dl, val_dl, test_dl = make_dataloaders(df_raw, exp_ctx, batch_size=config["batch_size"], num_workers=2)
+    train_dl, val_dl, test_dl = make_dataloaders(df_raw, exp_ctx, batch_size=config["batch_size"], num_workers=config["n_heads"])
+
+     # === Model ===
     available_feature_list = train_dl.dataset._get_available_features()
     logging.info(f"Available features: {available_feature_list}")
 
@@ -323,14 +324,19 @@ def run():
         mode="min", 
         save_last=True,
     )
-    early_stopping = EarlyStopping(monitor="val_loss", patience=10, mode="min")
+    patience = 10_000_000 if is_lock_and_loaded else 10
+    early_stopping = EarlyStopping(monitor="val_loss", 
+                                   patience=patience, 
+                                   mode="min")
+    
+    refresh_rate = 1_000 if is_lock_and_loaded else 50
 
-    progressbar = TQDMProgressBar(refresh_rate=50)
+    progressbar = TQDMProgressBar(refresh_rate=refresh_rate)
     
     trainer = Trainer(
         max_epochs=config["epochs"],
-        accelerator="gpu" if torch.cuda.is_available() else "cpu",
-        devices=config["gpu"] if torch.cuda.is_available() and config["gpu"] else 1,
+        accelerator="gpu" if is_lock_and_loaded else "cpu",
+        devices=config["gpu"] if is_lock_and_loaded and config["gpu"] else 1,
         callbacks=[checkpoint_callback, early_stopping, progressbar],
         default_root_dir=checkpoint_dir,
         log_every_n_steps=20,
