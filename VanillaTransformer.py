@@ -418,7 +418,10 @@ class MeteoVanillaTransformerEncoder(LightningModule):
 
     def configure_optimizers(self):
         max_lr = 3e-4
-        optimizer = torch.optim.AdamW(self.parameters(), lr=max_lr)
+        optimizer = torch.optim.AdamW(self.parameters(), 
+                                      lr=max_lr,
+                                    weight_decay=1e-4,
+                                    betas=(0.9, 0.999))
 
         # Compute total steps for OneCycleLR
         total_steps = self.trainer.estimated_stepping_batches
