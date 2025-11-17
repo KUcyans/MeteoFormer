@@ -73,7 +73,7 @@ def parse_args():
     parser.add_argument("--horizon", type=int, default=12)
     parser.add_argument("--batch_size", type=int, default=512)
     parser.add_argument("--num_layers", type=int, default=4)
-    parser.add_argument("--n_heads", type=int, default=4)
+    parser.add_argument("--n_heads", type=int, default=2)
     parser.add_argument("--d_model", type=int, default=64)
     parser.add_argument("--d_ff", type=int, default=256)
     parser.add_argument("--dropout", type=float, default=0.3)
@@ -154,16 +154,6 @@ def log_training_parameters(config: dict):
 
 # ===========================================================
 def write_benchmark_summary(start_time, end_time, trainer, config, log_file_path: str):
-    """
-    Print and append a benchmark summary table to the training log file.
-
-    Args:
-        start_time (float): time.time() at training start.
-        end_time (float): time.time() at training end.
-        trainer (pl.Trainer): Lightning trainer instance.
-        config (dict): Training configuration dictionary.
-        log_file_path (str): Full path to the training log file.
-    """
     elapsed = end_time - start_time
     elapsed_str = time.strftime("%H:%M:%S", time.gmtime(elapsed))
 
@@ -175,7 +165,7 @@ def write_benchmark_summary(start_time, end_time, trainer, config, log_file_path
     total_iters = getattr(trainer, "global_step", 0)
     iters_per_sec = total_iters / elapsed if elapsed > 0 else 0.0
 
-    # Architectural / training parameters summary
+    # Architectural parameters summary
     arch_params = {
         "d_model": config.get("d_model"),
         "n_heads": config.get("n_heads"),
@@ -188,6 +178,19 @@ def write_benchmark_summary(start_time, end_time, trainer, config, log_file_path
         "epochs": config.get("epochs"),
     }
 
+    # OneCycle parameters
+    if trainer.model is not None and hasattr(trainer.model, "get_onecycle_config"):
+        onecycle_cfg = trainer.model.get_onecycle_config()
+    else:
+        onecycle_cfg = {"error": "OneCycle config unavailable"}
+
+    # Optimizer parameters
+    if trainer.model is not None and hasattr(trainer.model, "get_optimizer_config"):
+        optim_cfg = trainer.model.get_optimizer_config()
+    else:
+        optim_cfg = {"error": "Optimizer config unavailable"}
+
+    # Build tables
     meta_summary = [
         ["Started", datetime.fromtimestamp(start_time).strftime("%Y-%m-%d %H:%M:%S")],
         ["Ended", datetime.fromtimestamp(end_time).strftime("%Y-%m-%d %H:%M:%S")],
@@ -197,13 +200,33 @@ def write_benchmark_summary(start_time, end_time, trainer, config, log_file_path
         ["Iterations/sec", f"{iters_per_sec:.2f}"],
     ]
 
+    # Now safe to append
     text_output = []
     text_output.append("\n" + "=" * 80)
     text_output.append("🏁 TRAINING BENCHMARK SUMMARY")
     text_output.append("=" * 80)
-    text_output.append(tabulate(meta_summary, headers=["Metric", "Value"], tablefmt="fancy_grid"))
+    text_output.append(tabulate(meta_summary,
+                                headers=["Metric", "Value"],
+                                tablefmt="fancy_grid"))
+
+    # Architecture table
     text_output.append("\n⚙️ MODEL ARCHITECTURE PARAMETERS")
-    text_output.append(tabulate(arch_params.items(), headers=["Parameter", "Value"], tablefmt="fancy_grid"))
+    text_output.append(tabulate(arch_params.items(),
+                                headers=["Parameter", "Value"],
+                                tablefmt="fancy_grid"))
+
+    # OneCycle table
+    text_output.append("\n⚡ ONE-CYCLE LR SCHEDULER PARAMETERS")
+    text_output.append(tabulate(onecycle_cfg.items(),
+                                headers=["Parameter", "Value"],
+                                tablefmt="fancy_grid"))
+
+    # Optimizer table
+    text_output.append("\n🛠️ OPTIMIZER PARAMETERS")
+    text_output.append(tabulate(optim_cfg.items(),
+                                headers=["Parameter", "Value"],
+                                tablefmt="fancy_grid"))
+
     text_output.append("=" * 80 + "\n")
 
     summary_text = "\n".join(text_output)
@@ -211,7 +234,7 @@ def write_benchmark_summary(start_time, end_time, trainer, config, log_file_path
     # Print to console
     logging.info(summary_text)
 
-    # Append to log file
+    # Write to log file
     with open(log_file_path, "a", encoding="utf-8") as f:
         f.write(summary_text)
 
@@ -299,7 +322,9 @@ def run():
 
     logging.info("📦 Building DataModule...")
     
-    train_dl, val_dl, test_dl = make_dataloaders(df_raw, exp_ctx, batch_size=config["batch_size"], num_workers=config["n_heads"])
+    train_dl, val_dl, test_dl = make_dataloaders(df_raw, exp_ctx, 
+                                                 batch_size=config["batch_size"], 
+                                                 num_workers=config["n_heads"])
 
      # === Model ===
     available_feature_list = train_dl.dataset._get_available_features()

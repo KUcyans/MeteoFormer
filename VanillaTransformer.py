@@ -417,24 +417,51 @@ class MeteoVanillaTransformerEncoder(LightningModule):
 
 
     def configure_optimizers(self):
-        max_lr = 3e-4
-        optimizer = torch.optim.AdamW(self.parameters(), 
-                                      lr=max_lr,
-                                    weight_decay=1e-3,
-                                    betas=(0.9, 0.999))
+        self._onecycle_cfg = {
+            "max_lr": 3e-4,
+            "div_factor": 25.0,
+            "final_div_factor": 1e2,
+            "pct_start": 0.1,
+            "anneal_strategy": "cos",
+            "three_phase": False,
+        }
+        self._onecycle_cfg["min_lr"] = (
+            self._onecycle_cfg["max_lr"]
+            / (self._onecycle_cfg["div_factor"] * self._onecycle_cfg["final_div_factor"])
+        )
+        self._onecycle_cfg["initial_lr"] = (
+            self._onecycle_cfg["max_lr"] / self._onecycle_cfg["div_factor"]
+        )
+        
+        self._optimizer_cfg = {
+            "optimizer": "AdamW",
+            "max_lr": self._onecycle_cfg["max_lr"],
+            "weight_decay": 1e-3,
+            "beta1": 0.9,
+            "beta2": 0.999,
+            "eps": 1e-8,
+        }
+
+        optimizer = torch.optim.AdamW(
+            self.parameters(),
+            lr=self._optimizer_cfg["max_lr"],
+            weight_decay=self._optimizer_cfg["weight_decay"],
+            betas=(self._optimizer_cfg["beta1"], self._optimizer_cfg["beta2"]),
+            eps=self._optimizer_cfg["eps"],
+        )
 
         # Compute total steps for OneCycleLR
         total_steps = self.trainer.estimated_stepping_batches
         # OneCycleLR configuration
         scheduler = torch.optim.lr_scheduler.OneCycleLR(
             optimizer,
-            max_lr=max_lr,
+            max_lr=self._onecycle_cfg["max_lr"],
             total_steps=total_steps,
-            pct_start=0.1,          # fraction of cycle to reach max LR (default 0.3)
-            anneal_strategy='cos',  # cosine annealing works well for transformers
-            div_factor=25.0,        # initial LR = max_lr / div_factor
-            final_div_factor=5e1,    # min LR = max_lr / (div_factor * final_div_factor)
-            three_phase=False
+            pct_start=self._onecycle_cfg["pct_start"],
+            anneal_strategy=self._onecycle_cfg["anneal_strategy"],
+            div_factor=self._onecycle_cfg["div_factor"],
+            final_div_factor=self._onecycle_cfg["final_div_factor"],
+            three_phase=self._onecycle_cfg["three_phase"],
         )
 
         return {
@@ -451,5 +478,12 @@ class MeteoVanillaTransformerEncoder(LightningModule):
         except Exception:
             # fallback estimate (useful for debugging or unit tests)
             return 1000
-
-
+        
+    def get_onecycle_config(self):
+        return {
+            **self._onecycle_cfg,
+            "total_steps": self._total_steps()
+        }
+        
+    def get_optimizer_config(self):
+        return dict(self._optimizer_cfg)
