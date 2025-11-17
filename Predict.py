@@ -297,7 +297,7 @@ def run():
 
     # fetch target future data
     kbh = Point(lat=55.6761, lon=12.5683)
-    start_time = datetime(2019, 6, 3, 0, 0)
+    start_time = datetime(2019, 6, 3, 12, 0)
     df_single = make_single_window_dataframe(kbh, start_time, exp_ctx)
     pred_dl = make_predict_loader(df_single, exp_ctx, batch_size=1)
 
@@ -357,23 +357,12 @@ def run():
         ckpt_tag = re.sub(r"-+", "-", ckpt_tag)
 
         # Build final CSV path
-        file_path = os.path.join(prediction_dir, f"{current_date}_{current_time}_{ckpt_tag}.csv")
+        start_time_str = start_time.strftime("%Y%m%d_%H%M")
+        file_path = os.path.join(prediction_dir, f"{current_date}_{current_time}_{ckpt_tag}({start_time_str}).csv")
         prediction_csvs[ckpt] = file_path
 
         df_out.to_csv(file_path, index=False)
         print(f"✅ prediction complete, saved: {file_path}")
-    # best_ckpt, best_loss = find_best_checkpoint(list(prediction_csvs.keys()))
-    # best_csv = prediction_csvs[best_ckpt]
-
-    # print(f"📘 Best checkpoint: {best_ckpt} (val_loss={best_loss})")
-    # print(f"📄 Best CSV: {best_csv}")
-
-    # save_pdf_for_checkpoint(
-    #     exp_ctx=exp_ctx,
-    #     prediction_csv_path=best_csv,
-    #     df_true_single=df_single,
-    #     output_dir=prediction_dir,
-    # )
 
 if __name__ == "__main__":
     warnings.filterwarnings("ignore")
