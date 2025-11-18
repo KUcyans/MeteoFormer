@@ -7,6 +7,13 @@ Load ALL checkpoints from a given run and run inference on future Meteostat data
 import warnings
 import pandas as pd
 import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
 # Suppress noisy PyTorch warnings
 def suppress_runtime_warnings():
     """
@@ -71,7 +78,7 @@ setMplParam()
 # ===========================================================
 def parse_args():
     p = argparse.ArgumentParser("Forecast future Meteo data using a trained Transformer")
-
+    p.add_argument("--gpu", nargs="+", type=int, default=[], help="List of GPU IDs to use")
     p.add_argument("--date", type=str, required=True, help="Run date: YYYYMMDD")
     p.add_argument("--time", type=str, required=True, help="Run time: HHMMSS")
     p.add_argument("--window_size", type=int, default=24)
@@ -83,31 +90,27 @@ def parse_args():
 
 # ===========================================================
 def lock_and_load(config):
-    """Set CUDA device based on config['gpu'] if available, else use CPU."""
-    logging.info(f"torch.cuda.is_available(): {torch.cuda.is_available()}")
+    """Detect if GPU should be used and optionally set cuda device. Returns gpu_enabled flag."""
+    gpu_available = torch.cuda.is_available()
+    logging.info(f"torch.cuda.is_available(): {gpu_available}")
     available_devices = list(range(torch.cuda.device_count()))
     logging.info(f"Available CUDA devices: {available_devices}")
 
-    if torch.cuda.is_available() and len(config.get("gpu", [])) > 0:
-        requested_gpus = config.get("gpu", [])
-        selected_gpu = int(requested_gpus[0]) if requested_gpus else 0
+    if gpu_available and config["gpu"]:
+        selected_gpu = config["gpu"][0]
 
         if selected_gpu in available_devices:
-            torch.cuda.empty_cache()
-            logging.info("🔥 LOCK AND LOAD! GPU ENGAGED! 🔥")
-            device = torch.device(f"cuda:{selected_gpu}")
             torch.cuda.set_device(selected_gpu)
+            torch.cuda.empty_cache()
             torch.set_float32_matmul_precision("highest")
-            logging.info(f"Using GPU: {selected_gpu} (cuda:{selected_gpu})")
+            logging.info(f"🔥 Using GPU: cuda:{selected_gpu}")
+            return True
         else:
-            logging.info(f"⚠️ Warning: GPU {selected_gpu} is not available. Using CPU instead.")
-            device = torch.device("cpu")
-    else:
-        device = torch.device("cpu")
-        logging.info("CUDA not available. Using CPU.")
+            logging.info(f"⚠️ GPU {selected_gpu} not found. Falling back to CPU.")
+            return False
 
-    logging.info(f"Selected device: {device}")
-    return device
+    logging.info("CUDA not available. Using CPU.")
+    return False
 
 # ===========================================================
 def get_checkpoints(config):
@@ -285,7 +288,7 @@ def save_pdf_for_checkpoint(
 # ===========================================================
 def run():
     config = parse_args()
-    device = lock_and_load(config)
+    is_lock_and_loaded = lock_and_load(config)
     date_time_dir = os.path.join(config["log_dir"], config["date"], config["time"])
     os.makedirs(date_time_dir, exist_ok=True)
     prediction_dir = os.path.join("prediction", config["date"], config["time"])
@@ -296,28 +299,23 @@ def run():
 
     # contex
     exp_ctx, target_features = get_contexts(config, date_time_dir)
+    print(f"target features from ctx: {target_features}")
 
     # fetch target future data
     kbh = Point(lat=55.6761, lon=12.5683)
-    start_time = datetime(2019, 6, 3, 12, 0)
+    start_time = datetime(2019, 6, 3, 0, 0)
     df_single = make_single_window_dataframe(kbh, start_time, exp_ctx)
     pred_dl = make_predict_loader(df_single, exp_ctx, batch_size=1)
 
     available_feature_list = pred_dl.dataset._get_available_features()
     logging.info(f"Available features for prediction: {available_feature_list}")
 
-    if torch.cuda.is_available():
-        trainer = Trainer(
-            accelerator="gpu",
-            devices=device,          # or [0] if you want to be explicit
-            max_epochs=1
-        )
-    else:
-        trainer = Trainer(
-            accelerator="cpu",
-            devices=1,          # CPUAccelerator requires an int > 0
-            max_epochs=1
-        )
+
+    trainer = Trainer(
+        accelerator="gpu" if is_lock_and_loaded else "cpu",
+        devices=config["gpu"] if is_lock_and_loaded and config["gpu"] else 1,
+        max_epochs=1
+    )
 
     # run prediction for each checkpoint
     prediction_csvs = {}

@@ -8,7 +8,8 @@ set -e
 mkdir -p logs
 
 # --- activate conda ----
-source /Users/yhjo/miniconda3/etc/profile.d/conda.sh
+# source /Users/yhjo/miniconda3/etc/profile.d/conda.sh
+source /home/cyan_white_tower/miniconda3/etc/profile.d/conda.sh
 conda activate tempestransformer
 # ------------------------
 
@@ -18,8 +19,8 @@ pkill -f "python3 Predict.py" || true
 sleep 1
 
 # ---- manual selection here ----
-DATE=20251116
-TIME=014137
+DATE=20251118
+TIME=191554
 # -------------------------------
 RUN_DATE=$(date +%Y%m%d)
 RUN_TIME=$(date +%H%M%S)

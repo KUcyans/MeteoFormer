@@ -148,9 +148,9 @@ class CyclicConversion:
         
         # no temporal decoding needed (original time index preserved)
         # --- Angular decoding 
-        if self.add_angle:
-            df['wdir'] = (np.degrees(np.arctan2(df['sin_wdir'],df['cos_wdir'])) % 360)
-            df = df.drop(columns=['sin_wdir','cos_wdir'], errors='ignore')
+        if self.add_angle and 'sin_wdir' in df.columns and 'cos_wdir' in df.columns:
+            df['wdir'] = (np.degrees(np.arctan2(df['sin_wdir'], df['cos_wdir'])) % 360)
+            df = df.drop(columns=['sin_wdir', 'cos_wdir'], errors='ignore')
 
         return df
 

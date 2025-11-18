@@ -586,6 +586,8 @@ class MeteoTaskCloser(nn.Module, abc.ABC):
             input_features, raw_targets
         )
         self.target_indices = [input_features.index(f) for f in self.target_features]
+        logging.info(f"Closer targets resolved to: {self.target_features}")
+        logging.info(f"Closer target indices: {self.target_indices}")
         self.out_dim = len(self.target_features)
 
         # ===== 3) Build FFN head with subclass overrides =====
@@ -660,7 +662,7 @@ class MeteoTaskCloser(nn.Module, abc.ABC):
 
 
 class ThermodynamicCloser(MeteoTaskCloser):
-    TARGETS = ["temp", "rhum", "pres"]
+    TARGETS = ["temp", "rhum", "pres", "dwpt"]
     HEAD_DEPTH = 4          # shallow
     HIDDEN_MULTIPLIER = 4   # default is fine
 
@@ -722,17 +724,17 @@ class MeteoVanillaTransformerEncoder(LightningModule):
         )
         self.freatures = forecast_ctx.target_features
 
-        # self.closer = ThermodynamicCloser(
-        #     closer_ctx=forecast_ctx,
-        #     model_ctx=model_ctx,
-        #     input_features=input_features,
-        # )
-
-        self.closer = WindCloser(
+        self.closer = ThermodynamicCloser(
             closer_ctx=forecast_ctx,
             model_ctx=model_ctx,
             input_features=input_features,
         )
+
+        # self.closer = WindCloser(
+        #     closer_ctx=forecast_ctx,
+        #     model_ctx=model_ctx,
+        #     input_features=input_features,
+        # )
 
         # --- Loss ---
         self.loss_fn = nn.MSELoss()

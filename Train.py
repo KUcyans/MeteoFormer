@@ -7,6 +7,13 @@ Train a vanilla Transformer encoder for meteorological sequence-to-sequence fore
 import warnings
 import pandas as pd
 import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
 # Suppress noisy PyTorch warnings
 def suppress_runtime_warnings():
     """
@@ -84,8 +91,8 @@ def parse_args():
     parser.add_argument(
         "--target_features",
         nargs="+",
-        # default=["temp", "rhum", "pres", "dwpt"],
-        default=["wspd", "sin_wdir", "cos_wdir"],
+        default=["temp", "rhum", "pres", "dwpt"],
+        # default=["wspd", "sin_wdir", "cos_wdir"],
         # default=["prcp"],
         help="List of target feature names to predict"
     )
