@@ -84,14 +84,9 @@ def parse_args():
     parser.add_argument(
         "--target_features",
         nargs="+",
-        default=["temp", 
-                 "rhum", 
-                 "pres",
-                #  "prcp", 
-                #  "wspd", 
-                #  "sin_wdir", 
-                #  "cos_wdir"
-                 ],
+        default=["temp", "rhum", "pres", "dwpt"],
+        # default=["wspd", "wpgt", "sin_wdir", "cos_wdir"],
+        # default=["prcp"],
         help="List of target feature names to predict"
     )
     parser.add_argument("--log_dir", type=str, default="./logs")

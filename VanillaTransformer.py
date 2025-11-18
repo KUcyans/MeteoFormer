@@ -565,23 +565,34 @@ class StarterMeteoVanillaTransformerEncoder(nn.Module):
         return self.final_norm(x)
 
 class MeteoTaskCloser(nn.Module, abc.ABC):
-    def __init__(self, 
-                 closer_ctx: ForecastContext,
-                 model_ctx: ModelContext,
-                 input_features: List[str]):
+    # subclasses override these
+    TARGETS: List[str] = []          # group of variables this closer predicts
+    HEAD_DEPTH: int = None           # if None → use model_ctx.closer_num_layers
+    HIDDEN_MULTIPLIER: int = 4       # 4×d_model by default
+
+    def __init__(
+        self,
+        closer_ctx: ForecastContext,
+        model_ctx: ModelContext,
+        input_features: List[str],
+    ):
         super().__init__()
 
-        # ===== 1) Resolve targets =====
+        # ===== 1) Subclass declares its own target variables =====
+        raw_targets = self.TARGETS or closer_ctx.target_features
+
+        # ===== 2) Resolve and index targets =====
         self.target_features = self._resolve_target_features(
-            input_features, closer_ctx.target_features
+            input_features, raw_targets
         )
         self.target_indices = [input_features.index(f) for f in self.target_features]
         self.out_dim = len(self.target_features)
 
-        # ===== 2) Build FFN head (common to all closers) =====
+        # ===== 3) Build FFN head with subclass overrides =====
         d_model = model_ctx.d_model
-        depth   = model_ctx.closer_num_layers
+        depth = self.HEAD_DEPTH or model_ctx.closer_num_layers
         dropout = model_ctx.dropout
+        hidden_dim = self.HIDDEN_MULTIPLIER * d_model
 
         act = model_ctx.closer_activation
         if act == "gelu":
@@ -594,23 +605,21 @@ class MeteoTaskCloser(nn.Module, abc.ABC):
             raise ValueError(f"Unsupported activation: {act}")
 
         layers = []
-        hidden_dim = 4 * d_model
-
         for _ in range(depth - 1):
             layers += [
                 nn.Linear(d_model, hidden_dim),
                 activation,
-                nn.Dropout(dropout)
+                nn.Dropout(dropout),
             ]
-            d_model = hidden_dim  # update layer width
+            d_model = hidden_dim
 
         layers.append(nn.Linear(d_model, self.out_dim))
         self.net = nn.Sequential(*layers)
 
     @abc.abstractmethod
     def forward(self, H):
-        """Forward must be implemented by subclasses."""
         pass
+
     
     @staticmethod
     def _resolve_target_features(input_features: list, target_features: list) -> list:
@@ -651,13 +660,29 @@ class MeteoTaskCloser(nn.Module, abc.ABC):
 
 
 class ThermodynamicCloser(MeteoTaskCloser):
+    TARGETS = ["temp", "rhum", "pres"]
+    HEAD_DEPTH = 4          # shallow
+    HIDDEN_MULTIPLIER = 4   # default is fine
+
     def forward(self, H):
-        """
-        H: (B, S, d_model)
-        returns: (B, S, out_dim)
-        """
         return self.net(H)
 
+
+class WindCloser(MeteoTaskCloser):
+    TARGETS = ["wspd", "wpgt", "sin_wdir", "cos_wdir"]
+    HEAD_DEPTH = 6                    
+    HIDDEN_MULTIPLIER = 8             
+
+    def forward(self, H):
+        return self.net(H)
+    
+class PrecipitationCloser(MeteoTaskCloser):
+    TARGETS = ["prcp"]
+    HEAD_DEPTH = 6
+    HIDDEN_MULTIPLIER = 6
+
+    def forward(self, H):
+        return self.net(H)
 
 
 class MeteoVanillaTransformerEncoder(LightningModule):
