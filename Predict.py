@@ -195,9 +195,11 @@ def build_model_signature(exp_ctx: ExperimentContext) -> str:
         f"b{mc.d_ff}_"
         f"d{mc.d_model}_"
         f"h{mc.n_heads}_"
-        f"l{mc.num_layers}_"
+        f"ls{mc.starter_num_layers}_"
+        f"cs{mc.closer_num_layers}_"
         f"win{fc.window}_"
         f"ho{fc.horizon}_"
+        f"dr{mc.dropout}_"
         f"lr"
     )
     return signature
@@ -326,7 +328,7 @@ def run():
             model_ctx=exp_ctx.model,
             forecast_ctx=exp_ctx.forecast,
             input_features=available_feature_list,
-            target_features=target_features
+            # target_features=target_features
         )
 
         model.eval()
