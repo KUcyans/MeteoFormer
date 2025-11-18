@@ -72,18 +72,26 @@ def parse_args():
     parser.add_argument("--window_size", type=int, default=72)
     parser.add_argument("--horizon", type=int, default=12)
     parser.add_argument("--batch_size", type=int, default=512)
-    parser.add_argument("--num_layers", type=int, default=4)
     parser.add_argument("--n_heads", type=int, default=2)
-    parser.add_argument("--d_model", type=int, default=64)
-    parser.add_argument("--d_ff", type=int, default=256)
+    parser.add_argument("--d_model", type=int, default=256)
+    parser.add_argument("--d_ff", type=int, default=1048)
+    parser.add_argument("--starter_num_layers", type=int, default=4)
+    parser.add_argument("--closer_num_layers", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.3)
-    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--val_ratio", type=float, default=0.2)
     parser.add_argument("--test_ratio", type=float, default=0.1)
     parser.add_argument(
         "--target_features",
         nargs="+",
-        default=["temp", "rhum", "prcp", "wspd", "sin_wdir", "cos_wdir"],
+        default=["temp", 
+                 "rhum", 
+                 "pres",
+                #  "prcp", 
+                #  "wspd", 
+                #  "sin_wdir", 
+                #  "cos_wdir"
+                 ],
         help="List of target feature names to predict"
     )
     parser.add_argument("--log_dir", type=str, default="./logs")
@@ -170,7 +178,8 @@ def write_benchmark_summary(start_time, end_time, trainer, config, log_file_path
         "d_model": config.get("d_model"),
         "n_heads": config.get("n_heads"),
         "d_ff": config.get("d_ff"),
-        "num_layers": config.get("num_layers"),
+        "starter_num_layers": config.get("starter_num_layers"),
+        "closer_num_layers": config.get("closer_num_layers"),
         "dropout": config.get("dropout"),
         "window": config.get("window_size"),
         "horizon": config.get("horizon"),
@@ -246,12 +255,14 @@ def build_contexts(config, log_dir):
         horizon=config["horizon"],
         val_ratio=config["val_ratio"],
         test_ratio=config["test_ratio"],
+        target_features=config["target_features"]
     )
     model_ctx=ModelContext(
         d_model=config["d_model"],
         n_heads=config["n_heads"],
         d_ff=config["d_ff"],
-        num_layers=config["num_layers"],
+        starter_num_layers=config["starter_num_layers"],
+        closer_num_layers=config["closer_num_layers"],
         dropout=config["dropout"]
     )
     exp_ctx = ExperimentContext(
@@ -335,7 +346,6 @@ def run():
         model_ctx=model_ctx,
         forecast_ctx=fc_ctx,
         input_features=available_feature_list,
-        target_features=config["target_features"],
     )
 
     checkpoint_dir = os.path.join(log_dir, "checkpoints")

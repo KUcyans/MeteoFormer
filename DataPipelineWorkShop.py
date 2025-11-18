@@ -51,6 +51,7 @@ class PreprocessingContext:
 class ForecastContext:
     window: int
     horizon: int
+    target_features: List[str]
     causal: bool = False
     overlap: bool = True
     strict: bool = False
@@ -63,9 +64,11 @@ class ModelContext:
     d_model: int
     n_heads: int
     d_ff: int
-    num_layers: int
+    starter_num_layers: int
     dropout: float
-    activation: str = "gelu"
+    closer_num_layers: int
+    starter_activation: str = "gelu"
+    closer_activation: str = "silu"
 
 @dataclass(frozen=True)
 class ExperimentContext:
