@@ -669,8 +669,8 @@ class ThermodynamicCloser(MeteoTaskCloser):
 
 
 class WindCloser(MeteoTaskCloser):
-    TARGETS = ["wspd", "wpgt", "sin_wdir", "cos_wdir"]
-    HEAD_DEPTH = 6                    
+    TARGETS = ["wspd", "sin_wdir", "cos_wdir"]
+    HEAD_DEPTH = 8                 
     HIDDEN_MULTIPLIER = 8             
 
     def forward(self, H):
@@ -679,7 +679,7 @@ class WindCloser(MeteoTaskCloser):
 class PrecipitationCloser(MeteoTaskCloser):
     TARGETS = ["prcp"]
     HEAD_DEPTH = 6
-    HIDDEN_MULTIPLIER = 6
+    HIDDEN_MULTIPLIER = 8
 
     def forward(self, H):
         return self.net(H)
@@ -722,7 +722,13 @@ class MeteoVanillaTransformerEncoder(LightningModule):
         )
         self.freatures = forecast_ctx.target_features
 
-        self.closer = ThermodynamicCloser(
+        # self.closer = ThermodynamicCloser(
+        #     closer_ctx=forecast_ctx,
+        #     model_ctx=model_ctx,
+        #     input_features=input_features,
+        # )
+
+        self.closer = WindCloser(
             closer_ctx=forecast_ctx,
             model_ctx=model_ctx,
             input_features=input_features,
@@ -774,7 +780,7 @@ class MeteoVanillaTransformerEncoder(LightningModule):
     # ==============================================================
     def training_step(self, batch, batch_idx):
         x, y, x_mask, y_mask = batch
-        preds = self.forward(x, mask=x_mask.all(-1))
+        preds = self.forward(x, mask=x_mask.any(-1))
         # x: (B, horizon, feature_dim)
         # pred: (B, horizon, target_dim)
         loss = self._compute_loss(preds, y, y_mask)
@@ -794,7 +800,7 @@ class MeteoVanillaTransformerEncoder(LightningModule):
 
     def validation_step(self, batch, batch_idx):
         x, y, x_mask, y_mask = batch
-        preds = self.forward(x, mask=x_mask.all(-1))
+        preds = self.forward(x, mask=x_mask.any(-1))
         loss = self._compute_loss(preds, y, y_mask)
         self.log("val_loss", loss, prog_bar=True)
 
@@ -810,7 +816,7 @@ class MeteoVanillaTransformerEncoder(LightningModule):
 
     def test_step(self, batch, batch_idx):
         x, y, x_mask, y_mask = batch
-        preds = self.forward(x, mask=x_mask.all(-1))
+        preds = self.forward(x, mask=x_mask.any(-1))
         loss = self._compute_loss(preds, y, y_mask)
         self.log("test_loss", loss)
         return loss
