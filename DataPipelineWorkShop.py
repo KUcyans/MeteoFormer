@@ -8,6 +8,7 @@ import sys
 import numpy as np
 from typing import Optional, List
 
+
 from dataclasses import dataclass
 # 5 sec: depends a lot on the internet connection
 # 30 sec – the south west corner of the black diamond
@@ -51,7 +52,6 @@ class PreprocessingContext:
 class ForecastContext:
     window: int
     horizon: int
-    target_features: List[str]
     causal: bool = False
     overlap: bool = True
     strict: bool = False
@@ -75,6 +75,7 @@ class ExperimentContext:
     preprocessing: PreprocessingContext
     forecast: ForecastContext
     model: ModelContext
+
 
 
 # ==============================================================

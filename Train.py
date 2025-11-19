@@ -70,7 +70,7 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, TQDMProgressBar
 from meteostat import Point
 from DataPipelineWorkShop import get_hourly_example, PreprocessingContext, ForecastContext, ModelContext, ExperimentContext,  make_dataloaders
-from VanillaTransformer import MeteoVanillaTransformerEncoder
+from VanillaTransformer import MeteoVanillaTransformerEncoder, CloserType
 
 # ===========================================================
 def parse_args():
@@ -88,13 +88,19 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--val_ratio", type=float, default=0.2)
     parser.add_argument("--test_ratio", type=float, default=0.1)
+    # parser.add_argument(
+    #     "--target_features",
+    #     nargs="+",
+    #     # default=["temp", "rhum", "pres", "dwpt"],
+    #     default=["wspd", "sin_wdir", "cos_wdir"],
+    #     # default=["prcp"],
+    #     help="List of target feature names to predict"
+    # )
     parser.add_argument(
-        "--target_features",
-        nargs="+",
-        # default=["temp", "rhum", "pres", "dwpt"],
-        default=["wspd", "sin_wdir", "cos_wdir"],
-        # default=["prcp"],
-        help="List of target feature names to predict"
+        "--target_task",
+        type=str,
+        default="thermodynamic",
+        help="Task type: thermodynamic | wind | precipitation"
     )
     parser.add_argument("--log_dir", type=str, default="./logs")
     parser.add_argument("--date", type=str, required=True, help="Execution date in YYYYMMDD format")
@@ -250,14 +256,13 @@ def write_benchmark_summary(start_time, end_time, trainer, config, log_file_path
         f.write(summary_text)
 
 # ===========================================================
-def build_contexts(config, log_dir):
+def build_contexts(config, log_dir, closer_type):
     pre_ctx = PreprocessingContext()
     fc_ctx = ForecastContext(
         window=config["window_size"],
         horizon=config["horizon"],
         val_ratio=config["val_ratio"],
         test_ratio=config["test_ratio"],
-        target_features=config["target_features"]
     )
     model_ctx=ModelContext(
         d_model=config["d_model"],
@@ -278,7 +283,7 @@ def build_contexts(config, log_dir):
             "preprocessing": vars(pre_ctx),
             "forecast"     : vars(fc_ctx),
             "model"        : vars(model_ctx),
-            "target_features": config["target_features"],
+            "target_features": closer_type.get_raw_target_features(),
         }, f, indent=2)
 
     return fc_ctx, model_ctx, exp_ctx
@@ -330,8 +335,10 @@ def run():
     kbh = Point(lat=55.6761, lon=12.5683)
     df_raw = get_hourly_example(kbh, start=datetime(1988, 1, 1), end=datetime(2018, 12, 31))
     
+    closer_type = CloserType.from_string(config["target_task"])
+    
     # context objects
-    fc_ctx, model_ctx, exp_ctx = build_contexts(config, log_dir)
+    fc_ctx, model_ctx, exp_ctx = build_contexts(config, log_dir, closer_type)
 
     logging.info("📦 Building DataModule...")
     
@@ -348,6 +355,7 @@ def run():
         model_ctx=model_ctx,
         forecast_ctx=fc_ctx,
         input_features=available_feature_list,
+        closer_type=closer_type
     )
 
     checkpoint_dir = os.path.join(log_dir, "checkpoints")
