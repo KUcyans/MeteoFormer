@@ -724,17 +724,17 @@ class MeteoVanillaTransformerEncoder(LightningModule):
         )
         self.freatures = forecast_ctx.target_features
 
-        self.closer = ThermodynamicCloser(
-            closer_ctx=forecast_ctx,
-            model_ctx=model_ctx,
-            input_features=input_features,
-        )
-
-        # self.closer = WindCloser(
+        # self.closer = ThermodynamicCloser(
         #     closer_ctx=forecast_ctx,
         #     model_ctx=model_ctx,
         #     input_features=input_features,
         # )
+
+        self.closer = WindCloser(
+            closer_ctx=forecast_ctx,
+            model_ctx=model_ctx,
+            input_features=input_features,
+        )
 
         # --- Loss ---
         self.loss_fn = nn.MSELoss()

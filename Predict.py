@@ -303,7 +303,7 @@ def run():
 
     # fetch target future data
     kbh = Point(lat=55.6761, lon=12.5683)
-    start_time = datetime(2019, 6, 3, 0, 0)
+    start_time = datetime(2019, 6, 3, 12, 0)
     df_single = make_single_window_dataframe(kbh, start_time, exp_ctx)
     pred_dl = make_predict_loader(df_single, exp_ctx, batch_size=1)
 
@@ -326,7 +326,6 @@ def run():
             model_ctx=exp_ctx.model,
             forecast_ctx=exp_ctx.forecast,
             input_features=available_feature_list,
-            # target_features=target_features
         )
 
         model.eval()

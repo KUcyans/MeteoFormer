@@ -18,3 +18,4 @@ DataPipelineWorkShop.py
 Predict.py
 RunPrediction.sh
 PredictionPerformance.ipynb
+prediction/*
