@@ -20,3 +20,5 @@ RunPrediction.sh
 PredictionPerformance.ipynb
 prediction/*
 Test.py
+RunTesting.sh
+test_results/*

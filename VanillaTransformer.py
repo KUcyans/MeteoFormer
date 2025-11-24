@@ -491,6 +491,8 @@ class MeteoVanillaTransformerEncoder(LightningModule):
 
         # --- Loss ---
         self.loss_fn = nn.MSELoss()
+        self._test_outputs = []
+
 
     # ==============================================================
     def forward(self, x, mask=None):
@@ -572,34 +574,43 @@ class MeteoVanillaTransformerEncoder(LightningModule):
 
         y_pred = self.forward(x, mask=x_mask.any(-1))
 
-        idx = self.closer.target_indices  # selected feature indices for this task
+        idx = self.closer.target_indices
 
         # Slice future windows
-        y_pred_f = y_pred[:, -self.horizon:, :]          # (B,H,out_dim)
-        y_true_f = y_true[:, -self.horizon:, idx]        # (B,H,out_dim)
-        y_mask_f = y_mask[:, -self.horizon:, idx]        # (B,H,out_dim)
+        y_pred_f = y_pred[:, -self.horizon:, :]
+        y_true_f = y_true[:, -self.horizon:, idx]
+        y_mask_f = y_mask[:, -self.horizon:, idx]
 
         diff = (y_pred_f - y_true_f) * y_mask_f
 
-        # Sum squared error over batch + time
-        mse = (diff ** 2).sum(dim=[0, 1])       # shape (out_dim,)
-        count = y_mask_f.sum(dim=[0, 1])        # shape (out_dim,)
+        mse = (diff ** 2).sum(dim=[0, 1])
+        count = y_mask_f.sum(dim=[0, 1])
 
-        return {"mse_sum": mse, "count": count}
+        out = {"mse_sum": mse, "count": count}
+
+        # === NEW: store results ourselves ===
+        self._test_outputs.append(out)
+
+        return out
 
 
-    def test_epoch_end(self, outputs):
+    def on_test_epoch_end(self):
+        outputs = self._test_outputs
+
         mse_total = torch.stack([o["mse_sum"] for o in outputs]).sum(dim=0)
         count_total = torch.stack([o["count"] for o in outputs]).sum(dim=0)
 
         rmse_per_feature = torch.sqrt(mse_total / count_total)
         rmse_avg = rmse_per_feature.mean()
 
-        self.log("rmse_avg", rmse_avg)
+        self.log("rmse_avg", rmse_avg, prog_bar=True)
 
         target_feats = self.get_target_features()
         for i, feat in enumerate(target_feats):
             self.log(f"rmse_{feat}", rmse_per_feature[i])
+
+        # Clear for next evaluation run
+        self._test_outputs = []
 
 
     def predict_step(self, batch, batch_idx):
@@ -611,9 +622,9 @@ class MeteoVanillaTransformerEncoder(LightningModule):
 
     def configure_optimizers(self):
         self._onecycle_cfg = {
-            "max_lr": 3e-4,
+            "max_lr": 1e-4,
             "div_factor": 25.0,
-            "final_div_factor": 1e2,
+            "final_div_factor": 1e3,
             "pct_start": 0.1,
             "anneal_strategy": "cos",
             "three_phase": False,

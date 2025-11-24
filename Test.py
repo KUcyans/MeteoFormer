@@ -66,6 +66,7 @@ import sys
 from datetime import datetime
 import torch
 from pytorch_lightning import Trainer
+from pytorch_lightning.callbacks import TQDMProgressBar
 from meteostat import Point
 from DataPipelineWorkShop import get_hourly_example, PreprocessingContext, ForecastContext, ModelContext, ExperimentContext, make_dataloaders, make_single_window_dataframe, MeteoPreprocessor
 from VanillaTransformer import MeteoVanillaTransformerEncoder
@@ -235,10 +236,15 @@ def run():
         )
         model.eval()
 
+        refresh_rate = 50
+
+        progressbar = TQDMProgressBar(refresh_rate=refresh_rate)
+
         trainer = Trainer(
             accelerator="gpu" if is_lock_and_loaded else "cpu",
             devices=config["gpu"] if is_lock_and_loaded and config["gpu"] else 1,
             logger=False,
+            callbacks=[progressbar],
         )
 
         trainer.test(model, dataloaders=test_dl, verbose=False)

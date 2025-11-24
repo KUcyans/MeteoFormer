@@ -85,7 +85,7 @@ def parse_args():
     parser.add_argument("--starter_num_layers", type=int, default=4)
     parser.add_argument("--closer_num_layers", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.3)
-    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--val_ratio", type=float, default=0.2)
     parser.add_argument("--test_ratio", type=float, default=0.1)
     parser.add_argument(
