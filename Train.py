@@ -88,19 +88,12 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--val_ratio", type=float, default=0.2)
     parser.add_argument("--test_ratio", type=float, default=0.1)
-    # parser.add_argument(
-    #     "--target_features",
-    #     nargs="+",
-    #     # default=["temp", "rhum", "pres", "dwpt"],
-    #     default=["wspd", "sin_wdir", "cos_wdir"],
-    #     # default=["prcp"],
-    #     help="List of target feature names to predict"
-    # )
     parser.add_argument(
         "--target_task",
         type=str,
-        default="thermodynamic",
-        help="Task type: thermodynamic | wind | precipitation"
+        # default="thermodynamic",
+        default="thermo",
+        help="Task type: thermo | thermodynamic | wind | precipitation"
     )
     parser.add_argument("--log_dir", type=str, default="./logs")
     parser.add_argument("--date", type=str, required=True, help="Execution date in YYYYMMDD format")
@@ -404,7 +397,7 @@ def run():
     logging.info(f"🧪 {config['tracker']} log: {tracker_log}")
     
     if config["tracker"] == "wandb":
-        try:wandb.finish()
+        try: wandb.finish()
         except:pass
     elif config["tracker"] == "mlflow":
         from mlflow import end_run

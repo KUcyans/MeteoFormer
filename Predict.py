@@ -69,7 +69,6 @@ from pytorch_lightning import Trainer
 from meteostat import Point
 from DataPipelineWorkShop import get_hourly_example, PreprocessingContext, ForecastContext, ModelContext, ExperimentContext, make_predict_loader, MeteoPreprocessor
 from VanillaTransformer import MeteoVanillaTransformerEncoder
-from matplotlib.backends.backend_pdf import PdfPages
 # ===========================================================
 import matplotlib.pyplot as plt
 sys.path.append('Utils/')
@@ -234,56 +233,6 @@ def find_best_checkpoint(ckpt_list):
             best_ckpt = ckpt
 
     return best_ckpt, best_loss
-
-# ===========================================================
-def save_pdf_for_checkpoint(
-    exp_ctx,
-    prediction_csv_path,
-    df_true_single,
-    output_dir,
-    features=["temp", "rhum", "wspd", "wdir"],
-):
-    # model signature
-    signature = build_model_signature(exp_ctx)
-    pdf_path = os.path.join(output_dir, f"{signature}.pdf")
-
-    print(f"📄 Saving PDF to: {pdf_path}")
-
-    # load pred CSV
-    df_pred = pd.read_csv(prediction_csv_path)
-    processor = MeteoPreprocessor(
-        use_cyclic=exp_ctx.preprocessing.use_cyclic,
-        categorical_mode=exp_ctx.preprocessing.categorical_mode
-    )
-    df_pred = processor.inverse_transform(df_pred)
-
-    if "time" in df_pred.columns:
-        df_pred["time"] = pd.to_datetime(df_pred["time"])
-        df_pred = df_pred.set_index("time")
-
-    df_true = df_true_single.copy()
-    if "time" in df_true.columns:
-        df_true["time"] = pd.to_datetime(df_true["time"])
-        df_true = df_true.set_index("time")
-
-    # write PDF
-    with PdfPages(pdf_path) as pdf:
-        for feature in features:
-            fig, ax = plt.subplots(figsize=(18, 6))
-
-            df_true[feature].plot(ax=ax, label="True", linewidth=2)
-            df_pred[feature].plot(ax=ax, label="Prediction", linestyle="--")
-
-            ax.set_title(f"{signature} — {feature}")
-            ax.set_ylabel(feature)
-            ax.set_xlabel("Time")
-            ax.legend()
-            plt.tight_layout()
-
-            pdf.savefig(fig)
-            plt.close(fig)
-
-    print(f"✔ PDF saved: {pdf_path}")
 
 # ===========================================================
 def run():

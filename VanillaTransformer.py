@@ -381,13 +381,20 @@ class MeteoTaskCloser(nn.Module, abc.ABC):
 
 class ThermodynamicCloser(MeteoTaskCloser):
     TARGETS = ["temp", "rhum", "pres", "dwpt"]
-    HEAD_DEPTH = 4          # shallow
-    HIDDEN_MULTIPLIER = 4   # default is fine
+    HEAD_DEPTH = 4
+    HIDDEN_MULTIPLIER = 4
 
     def forward(self, H):
         return self.net(H)
 
+class ThermoCloser(MeteoTaskCloser):
+    TARGETS = ["temp",]
+    HEAD_DEPTH = 4
+    HIDDEN_MULTIPLIER = 4
 
+    def forward(self, H):
+        return self.net(H)
+    
 class WindCloser(MeteoTaskCloser):
     TARGETS = ["wspd", "sin_wdir", "cos_wdir"]
     HEAD_DEPTH = 8                 
@@ -405,9 +412,10 @@ class PrecipitationCloser(MeteoTaskCloser):
         return self.net(H)
 
 class CloserType(Enum):
-    Thermodynamic = (0, ThermodynamicCloser, "thermodynamic")
-    Wind          = (1, WindCloser, "wind")
-    Precipitation = (2, PrecipitationCloser, "precipitation")
+    Thermo        = (0, ThermoCloser, "thermo")
+    Thermodynamic = (1, ThermodynamicCloser, "thermodynamic")
+    Wind          = (2, WindCloser, "wind")
+    Precipitation = (3, PrecipitationCloser, "precipitation")
     
     def __init__(self, 
                  val:int,
