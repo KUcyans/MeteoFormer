@@ -19,3 +19,4 @@ Predict.py
 RunPrediction.sh
 PredictionPerformance.ipynb
 prediction/*
+Test.py
