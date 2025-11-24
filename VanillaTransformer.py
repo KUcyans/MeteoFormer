@@ -568,12 +568,40 @@ class MeteoVanillaTransformerEncoder(LightningModule):
         return loss
 
     def test_step(self, batch, batch_idx):
-        x, y, x_mask, y_mask = batch
-        preds = self.forward(x, mask=x_mask.any(-1))
-        loss = self._compute_loss(preds, y, y_mask)
-        self.log("test_loss", loss)
-        return loss
-    
+        x, y_true, x_mask, y_mask = batch
+
+        y_pred = self.forward(x, mask=x_mask.any(-1))
+
+        idx = self.closer.target_indices  # selected feature indices for this task
+
+        # Slice future windows
+        y_pred_f = y_pred[:, -self.horizon:, :]          # (B,H,out_dim)
+        y_true_f = y_true[:, -self.horizon:, idx]        # (B,H,out_dim)
+        y_mask_f = y_mask[:, -self.horizon:, idx]        # (B,H,out_dim)
+
+        diff = (y_pred_f - y_true_f) * y_mask_f
+
+        # Sum squared error over batch + time
+        mse = (diff ** 2).sum(dim=[0, 1])       # shape (out_dim,)
+        count = y_mask_f.sum(dim=[0, 1])        # shape (out_dim,)
+
+        return {"mse_sum": mse, "count": count}
+
+
+    def test_epoch_end(self, outputs):
+        mse_total = torch.stack([o["mse_sum"] for o in outputs]).sum(dim=0)
+        count_total = torch.stack([o["count"] for o in outputs]).sum(dim=0)
+
+        rmse_per_feature = torch.sqrt(mse_total / count_total)
+        rmse_avg = rmse_per_feature.mean()
+
+        self.log("rmse_avg", rmse_avg)
+
+        target_feats = self.get_target_features()
+        for i, feat in enumerate(target_feats):
+            self.log(f"rmse_{feat}", rmse_per_feature[i])
+
+
     def predict_step(self, batch, batch_idx):
         x, y, x_mask, y_mask = batch
         preds = self.forward(x, mask=x_mask.any(-1))

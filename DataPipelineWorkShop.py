@@ -17,10 +17,12 @@ from torch.utils.data import Dataset, DataLoader
 from pytorch_lightning import LightningDataModule, LightningModule, Trainer
 # 30 sec
 
+# ==============================================================
 def get_hourly_example(location: Point, start: datetime, end: datetime ) -> pd.DataFrame: 
     example_df = Hourly(location, start, end) 
     return example_df.fetch() 
 
+# ==============================================================
 def isClean(df: pd.DataFrame) -> bool:
     """
     Return True if the DataFrame contains no NaN values.
@@ -76,7 +78,33 @@ class ExperimentContext:
     forecast: ForecastContext
     model: ModelContext
 
+# ==============================================================
+def make_single_window_dataframe(location: Point, 
+                                 start_time: datetime, 
+                                 exp_ctx: ExperimentContext) -> pd.DataFrame:
+    """
+    Construct a minimal Meteostat dataframe covering exactly one forecasting window.
 
+    Args:
+        location (Point): Meteostat location object.
+        start_time (datetime): End of the observation window (the forecast will start right after this).
+        exp_ctx (ExperimentContext): Contains forecast.window and forecast.horizon.
+    """
+    fc = exp_ctx.forecast
+    window_hours = fc.window
+    horizon_hours = fc.horizon
+
+    # Fetch data covering just enough history for one forecast
+    history_start = start_time - pd.Timedelta(hours=window_hours)
+    history_end   = start_time + pd.Timedelta(hours=horizon_hours)
+
+    df = get_hourly_example(location, history_start, history_end)
+
+    # Defensive timestamp conversion
+    if isinstance(df.index, pd.PeriodIndex):
+        df.index = df.index.to_timestamp()
+
+    return df
 
 # ==============================================================
 class CyclicConversion:

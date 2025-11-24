@@ -67,7 +67,7 @@ from datetime import datetime
 import torch
 from pytorch_lightning import Trainer
 from meteostat import Point
-from DataPipelineWorkShop import get_hourly_example, PreprocessingContext, ForecastContext, ModelContext, ExperimentContext, make_predict_loader, MeteoPreprocessor
+from DataPipelineWorkShop import get_hourly_example, PreprocessingContext, ForecastContext, ModelContext, ExperimentContext, make_predict_loader, make_single_window_dataframe, MeteoPreprocessor
 from VanillaTransformer import MeteoVanillaTransformerEncoder
 # ===========================================================
 import matplotlib.pyplot as plt
@@ -154,35 +154,6 @@ def get_contexts(config, log_dir):
         model=model_ctx
     )
     return exp_ctx, target_features
-
-# ===========================================================
-def make_single_window_dataframe(location: Point, 
-                                 start_time: datetime, 
-                                 exp_ctx: ExperimentContext) -> pd.DataFrame:
-    """
-    Construct a minimal Meteostat dataframe covering exactly one forecasting window.
-
-    Args:
-        location (Point): Meteostat location object.
-        start_time (datetime): End of the observation window (the forecast will start right after this).
-        exp_ctx (ExperimentContext): Contains forecast.window and forecast.horizon.
-    """
-    fc = exp_ctx.forecast
-    window_hours = fc.window
-    horizon_hours = fc.horizon
-
-    # Fetch data covering just enough history for one forecast
-    history_start = start_time - pd.Timedelta(hours=window_hours)
-    history_end   = start_time + pd.Timedelta(hours=horizon_hours)
-
-    df = get_hourly_example(location, history_start, history_end)
-
-    # Defensive timestamp conversion
-    if isinstance(df.index, pd.PeriodIndex):
-        df.index = df.index.to_timestamp()
-
-    return df
-
 
 # ===========================================================
 def build_model_signature(exp_ctx: ExperimentContext) -> str:

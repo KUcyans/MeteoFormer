@@ -335,7 +335,7 @@ def run():
 
     logging.info("📦 Building DataModule...")
     
-    train_dl, val_dl, test_dl = make_dataloaders(df_raw, exp_ctx, 
+    train_dl, val_dl, _ = make_dataloaders(df_raw, exp_ctx, 
                                                  batch_size=config["batch_size"], 
                                                  num_workers=config["n_heads"])
 
