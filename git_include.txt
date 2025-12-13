@@ -22,3 +22,4 @@ prediction/*
 Test.py
 RunTesting.sh
 test_results/*
+Informer.py

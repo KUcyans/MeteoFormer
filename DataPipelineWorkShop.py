@@ -374,13 +374,15 @@ class MeteoPreprocessor:
         self.scaler = PseudoNormaliser()
 
     def transform(self, df):
-        df = self.cyclic.transform(df)
+        if self.cyclic == True:
+            df = self.cyclic.transform(df)
         df = self.encoder.transform(df)
         df = self.scaler.transform(df)
         return df
     
     def inverse_transform(self, df):
-        df = self.scaler.inverse_transform(df)
+        if self.cyclic == True:
+            df = self.scaler.inverse_transform(df)
         df = self.encoder.inverse_transform(df)
         df = self.cyclic.inverse_transform(df)
         return df
@@ -438,8 +440,8 @@ class MeteoDataset(Dataset):
 
         # Ensure all columns exist, even if entirely NaN
         for col in self.ALL_FEATURES:
-            if col not in source_data.columns:
-                source_data[col] = np.nan
+            if col not in self.source_data.columns:
+                self.source_data[col] = np.nan
 
         # --- Ensure datetime index BEFORE preprocessing ---
         if not isinstance(self.source_data.index, pd.DatetimeIndex):
