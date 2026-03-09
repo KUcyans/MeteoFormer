@@ -71,6 +71,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, TQDMProg
 from meteostat import Point
 from DataPipelineWorkShop import get_hourly_example, PreprocessingContext, ForecastContext, ModelContext, ExperimentContext,  make_dataloaders
 from VanillaTransformer import MeteoVanillaTransformerEncoder, CloserType
+from Informer import MeteoInformerHourglassTransformer
 
 # ===========================================================
 def parse_args():
@@ -326,7 +327,7 @@ def run():
     # === Example data ===
     logging.info("🌍 Fetching Meteostat hourly data for Copenhagen...")
     kbh = Point(lat=55.6761, lon=12.5683)
-    df_raw = get_hourly_example(kbh, start=datetime(1988, 1, 1), end=datetime(2018, 12, 31))
+    df_raw = get_hourly_example(kbh, start=datetime(2016, 1, 1), end=datetime(2018, 12, 31))
     
     closer_type = CloserType.from_string(config["target_task"])
     
@@ -344,7 +345,14 @@ def run():
     logging.info(f"Available features: {available_feature_list}")
 
     logging.info("⚙️ Building model...")
-    model = MeteoVanillaTransformerEncoder(
+    # model = MeteoVanillaTransformerEncoder(
+    #     model_ctx=model_ctx,
+    #     forecast_ctx=fc_ctx,
+    #     input_features=available_feature_list,
+    #     closer_type=closer_type
+    # )
+    
+    model = MeteoInformerHourglassTransformer(
         model_ctx=model_ctx,
         forecast_ctx=fc_ctx,
         input_features=available_feature_list,

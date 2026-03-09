@@ -23,7 +23,7 @@ from pytorch_lightning import LightningModule
 # If you keep ModelContext/ForecastContext in DataPipelineWorkShop, import them as you did:
 # from DataPipelineWorkShop import ForecastContext, ModelContext
 # And reuse your closer classes by importing them:
-# from VanillaTransformer import MeteoTaskCloser, CloserType
+from VanillaTransformer import MeteoTaskCloser, CloserType
 
 # =============================================================================
 # ProbSparseAttentionCore
@@ -401,40 +401,39 @@ class StarterMeteoInformerHourglassEncoder(nn.Module):
 # =============================================================================
 
 class ResamplingCloser(nn.Module):
-    """
-    Wraps an existing tokenwise closer:
-      - Resamples encoder output (B,S_out,D) -> (B,preset_len,D)
-      - Then applies the underlying closer tokenwise to get (B,preset_len,out_dim)
-
-    This lets you keep the same loss code that slices the last horizon.
-    """
-
-    def __init__(self, base_closer: nn.Module, preset_len: int):
+    def __init__(
+        self,
+        model_ctx: ModelContext,
+        input_features: List[str],
+        closer_type: CloserType,
+        preset_len: int,
+    ):
         super().__init__()
-        self.base = base_closer
         self.preset_len = preset_len
+        self.closer = closer_type.type(
+            model_ctx=model_ctx,
+            input_features=input_features,
+        )
 
-        # Expose these so the LightningModule can keep using them
-        self.target_indices = getattr(base_closer, "target_indices", None)
+        self.target_indices = self.closer.target_indices
 
     def forward(self, H: torch.Tensor, H_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        # Optional: zero invalid timesteps before resampling (prevents mixing garbage into valid regions)
         if H_mask is not None:
             H = H * H_mask.unsqueeze(-1).float()
 
         B, S, D = H.shape
         if S != self.preset_len:
-            Ht = H.transpose(1, 2)  # (B,D,S)
-            Ht = F.interpolate(Ht, size=self.preset_len, mode="linear", align_corners=False)
-            H = Ht.transpose(1, 2)  # (B,preset_len,D)
+            H = F.interpolate(
+                H.transpose(1, 2),
+                size=self.preset_len,
+                mode="linear",
+                align_corners=False
+            ).transpose(1, 2)
 
-        return self.base(H)
+        return self.closer(H)
 
     def get_target_features(self):
-        if hasattr(self.base, "get_target_features"):
-            return self.base.get_target_features()
-        return None
-
+        return self.closer.get_target_features()
 
 # =============================================================================
 # LightningModule wrapper (reuse your closer + loss logic)
@@ -467,19 +466,22 @@ class MeteoInformerHourglassTransformer(LightningModule):
         self.forecast_ctx = forecast_ctx
         self.horizon = forecast_ctx.horizon
         self.input_features = input_features
+        self.preset_len = preset_len if preset_len is not None else forecast_ctx.window
+
 
         self.starter = StarterMeteoInformerHourglassEncoder(
             model_ctx=model_ctx,
             forecast_ctx=forecast_ctx,
             input_features=input_features,
-            preset_len=preset_len,
             distil=distil,
             factor=factor,
         )
 
-        self.closer = closer_type.type(
+        self.closer = ResamplingCloser(
             model_ctx=model_ctx,
             input_features=input_features,
+            closer_type=closer_type,
+            preset_len=self.preset_len,
         )
 
         self.loss_fn = nn.MSELoss()

@@ -207,7 +207,7 @@ def run():
 
     # 2. Prepare dataset
     kbh = Point(lat=55.6761, lon=12.5683)
-    df_raw = get_hourly_example(kbh, start=datetime(1988, 1, 1), end=datetime(2018, 12, 31))
+    df_raw = get_hourly_example(kbh, start=datetime(2016, 1, 1), end=datetime(2018, 12, 31))
     _, _, test_dl = make_dataloaders(
         df_raw, exp_ctx,
         batch_size=config["batch_size"],
