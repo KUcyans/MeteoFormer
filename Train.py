@@ -90,7 +90,7 @@ def parse_args():
     parser.add_argument("--val_ratio", type=float, default=0.2)
     parser.add_argument("--test_ratio", type=float, default=0.1)
     parser.add_argument(
-        "--target_task",
+        "--closer_type",
         type=str,
         # default="thermodynamic",
         default="thermo",
@@ -277,6 +277,7 @@ def build_contexts(config, log_dir, closer_type):
             "preprocessing": vars(pre_ctx),
             "forecast"     : vars(fc_ctx),
             "model"        : vars(model_ctx),
+            "closer_type"  : closer_type.string,
             "target_features": closer_type.get_raw_target_features(),
         }, f, indent=2)
 
@@ -327,9 +328,11 @@ def run():
     # === Example data ===
     logging.info("🌍 Fetching Meteostat hourly data for Copenhagen...")
     kbh = Point(lat=55.6761, lon=12.5683)
-    df_raw = get_hourly_example(kbh, start=datetime(2016, 1, 1), end=datetime(2018, 12, 31))
+    first_year=2010
+    last_year=2020
+    df_raw = get_hourly_example(kbh, start=datetime(first_year, 1, 1), end=datetime(last_year, 12, 31))
     
-    closer_type = CloserType.from_string(config["target_task"])
+    closer_type = CloserType.from_string(config["closer_type"])
     
     # context objects
     fc_ctx, model_ctx, exp_ctx = build_contexts(config, log_dir, closer_type)
@@ -337,8 +340,8 @@ def run():
     logging.info("📦 Building DataModule...")
     
     train_dl, val_dl, _ = make_dataloaders(df_raw, exp_ctx, 
-                                                 batch_size=config["batch_size"], 
-                                                 num_workers=config["n_heads"])
+                                                batch_size=config["batch_size"], 
+                                                num_workers=config["n_heads"])
 
      # === Model ===
     available_feature_list = train_dl.dataset._get_available_features()
@@ -386,7 +389,7 @@ def run():
         callbacks=[checkpoint_callback, early_stopping, progressbar],
         default_root_dir=checkpoint_dir,
         log_every_n_steps=20,
-        deterministic=True,
+        deterministic=False,
         logger=logger,
         precision="bf16-mixed" if torch.cuda.is_available() else 32,
         gradient_clip_val=1.0,

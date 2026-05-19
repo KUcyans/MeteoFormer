@@ -18,6 +18,7 @@ DataPipelineWorkShop.py
 Predict.py
 RunPrediction.sh
 PredictionPerformance.ipynb
+TemperaturePrediction.ipynb
 prediction/*
 Test.py
 RunTesting.sh

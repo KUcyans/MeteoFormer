@@ -68,7 +68,8 @@ import torch
 from pytorch_lightning import Trainer
 from meteostat import Point
 from DataPipelineWorkShop import get_hourly_example, PreprocessingContext, ForecastContext, ModelContext, ExperimentContext, make_predict_loader, make_single_window_dataframe, MeteoPreprocessor
-from VanillaTransformer import MeteoVanillaTransformerEncoder
+from VanillaTransformer import MeteoVanillaTransformerEncoder, CloserType
+from Informer import MeteoInformerHourglassTransformer
 # ===========================================================
 import matplotlib.pyplot as plt
 sys.path.append('Utils/')
@@ -146,14 +147,16 @@ def get_contexts(config, log_dir):
     pre_ctx   = PreprocessingContext(**ctx_dict["preprocessing"])
     fc_ctx    = ForecastContext(**ctx_dict["forecast"])
     model_ctx = ModelContext(**ctx_dict["model"])
+    closer_type = CloserType.from_string(ctx_dict["closer_type"])
     target_features = ctx_dict["target_features"]
+    logging.info(f"Target features: {target_features}")
 
     exp_ctx = ExperimentContext(
         preprocessing=pre_ctx,
         forecast=fc_ctx,
         model=model_ctx
     )
-    return exp_ctx, target_features
+    return exp_ctx, target_features, closer_type
 
 # ===========================================================
 def build_model_signature(exp_ctx: ExperimentContext) -> str:
@@ -206,6 +209,23 @@ def find_best_checkpoint(ckpt_list):
     return best_ckpt, best_loss
 
 # ===========================================================
+def get_input_features_from_checkpoint(ckpt_path):
+    ckpt = torch.load(
+        ckpt_path,
+        map_location="cpu",
+        weights_only=False,
+    )
+    hparams = ckpt.get("hyper_parameters", {})
+
+    if "input_features" not in hparams:
+        raise KeyError(
+            "Checkpoint does not contain 'input_features'. "
+            "For old checkpoints, save the training feature list into context.json."
+        )
+
+    return hparams["input_features"]
+
+# ===========================================================
 def run():
     config = parse_args()
     is_lock_and_loaded = lock_and_load(config)
@@ -218,70 +238,122 @@ def run():
     ckpts = get_checkpoints(config)
 
     # contex
-    exp_ctx, target_features = get_contexts(config, date_time_dir)
-    print(f"target features from ctx: {target_features}")
+    exp_ctx, target_features, closer_type = get_contexts(config, date_time_dir)
 
     # fetch target future data
     kbh = Point(lat=55.6761, lon=12.5683)
-    start_time = datetime(2019, 6, 3, 12, 0)
-    df_single = make_single_window_dataframe(kbh, start_time, exp_ctx)
-    pred_dl = make_predict_loader(df_single, exp_ctx, batch_size=1)
+    what_year = 2021
+    start_times = {
+        "vernal_equinox_formid" : datetime(what_year, 3, 21, 0, 0),
+        "vernal_equinox_eftmid" : datetime(what_year, 3, 21, 12, 0),
+        "sankthans_formid" : datetime(what_year, 6, 21, 0, 0),
+        "sankthans_eftmid" : datetime(what_year, 6, 21, 12, 0),
+        "hangeulnal_formid": datetime(what_year, 10, 9, 0, 0),
+        "hangeulnal_eftmid": datetime(what_year, 10, 9, 12, 0),
+    }
+    
+    for when_key, start_time in start_times.items():
+        logging.info(f"Now predicting {when_key}......")
+        df_single = make_single_window_dataframe(kbh, start_time, exp_ctx)
 
-    available_feature_list = pred_dl.dataset._get_available_features()
-    logging.info(f"Available features for prediction: {available_feature_list}")
-
-
-    trainer = Trainer(
-        accelerator="gpu" if is_lock_and_loaded else "cpu",
-        devices=config["gpu"] if is_lock_and_loaded and config["gpu"] else 1,
-        max_epochs=1
-    )
-
-    # run prediction for each checkpoint
-    prediction_csvs = {}
-    for ckpt in ckpts:
-        logging.info(f"running prediction using checkpoint: {ckpt}")
-        model = MeteoVanillaTransformerEncoder.load_from_checkpoint(
-            ckpt,
-            model_ctx=exp_ctx.model,
-            forecast_ctx=exp_ctx.forecast,
-            input_features=available_feature_list,
+        trainer = Trainer(
+            accelerator="gpu" if is_lock_and_loaded else "cpu",
+            devices=config["gpu"] if is_lock_and_loaded and config["gpu"] else 1,
+            max_epochs=1
         )
+        
+        # run prediction for each checkpoint
+        prediction_csvs = {}
+        for ckpt in ckpts:
+            logging.info(f"running prediction using checkpoint: {ckpt}")
 
-        model.eval()
+            # Get the feature schema used during training
+            trained_feature_list = get_input_features_from_checkpoint(ckpt)
 
-        preds = trainer.predict(model, dataloaders=pred_dl)
-        pred = torch.cat(preds, dim=0).cpu()   # shape (1, H, D)
-        pred = pred[0]                         # remove batch dimension → (H, D)
+            logging.info(f"Trained features from checkpoint: {trained_feature_list}")
 
-        # Identify base timestamp (last observed hour before forecast)
-        horizon = exp_ctx.forecast.horizon
-        base_time = df_single.index[exp_ctx.forecast.window - 1]
-        future_times = [base_time + pd.Timedelta(hours=k + 1) for k in range(horizon)]
+            # Build prediction dataset using the same feature schema
+            pred_dl = make_predict_loader(
+                df_single,
+                exp_ctx,
+                batch_size=1,
+                fixed_features=trained_feature_list,
+            )
 
-        # Construct output DataFrame
-        df_out = pd.DataFrame(pred.tolist(), columns=target_features)
-        df_out.insert(0, "time", future_times)
+            prediction_feature_list = pred_dl.dataset._get_available_features()
+            logging.info(f"Prediction features after schema lock: {prediction_feature_list}")
 
-        # Save
-        current_date = datetime.now().strftime("%Y%m%d")
-        current_time = datetime.now().strftime("%H%M%S")
+            assert prediction_feature_list == trained_feature_list, (
+                "Prediction dataset feature schema does not match checkpoint feature schema."
+            )
+            
+            # model = MeteoVanillaTransformerEncoder.load_from_checkpoint(
+            #     ckpt,
+            #     model_ctx=exp_ctx.model,
+            #     forecast_ctx=exp_ctx.forecast,
+            #     input_features=trained_feature_list,
+            #     closer_type=closer_type
+            # )
+            
+            model = MeteoInformerHourglassTransformer.load_from_checkpoint(
+                checkpoint_path=ckpt,
+                model_ctx=exp_ctx.model,
+                forecast_ctx=exp_ctx.forecast,
+                input_features=trained_feature_list,
+                closer_type=closer_type
+            )
 
-        ckpt_base = os.path.splitext(os.path.basename(ckpt))[0]
+            model.eval()
 
-        # Convert pattern like 'epoch=19-val_loss=0.1025' → 'epoch-19-val_loss-0.1025'
-        ckpt_tag = ckpt_base.replace("=", "-")
+            preds = trainer.predict(model, dataloaders=pred_dl)
+            pred = torch.cat(preds, dim=0).cpu()   # shape (1, H, D)
+            pred = pred[0]                         # remove batch dimension → (H, D)
 
-        # Remove any accidental double dashes (just in case)
-        ckpt_tag = re.sub(r"-+", "-", ckpt_tag)
+            # Identify base timestamp (last observed hour before forecast)
+            horizon = exp_ctx.forecast.horizon
+            base_time = df_single.index[exp_ctx.forecast.window - 1]
+            future_times = [base_time + pd.Timedelta(hours=k + 1) for k in range(horizon)]
 
-        # Build final CSV path
-        start_time_str = start_time.strftime("%Y%m%d_%H%M")
-        file_path = os.path.join(prediction_dir, f"{current_date}_{current_time}_{ckpt_tag}({start_time_str}).csv")
-        prediction_csvs[ckpt] = file_path
+            # Use the model's resolved output feature names
+            resolved_target_features = model.get_target_features()
 
-        df_out.to_csv(file_path, index=False)
-        print(f"✅ prediction complete, saved: {file_path}")
+            # Convert model-space predictions to DataFrame
+            df_pred = pd.DataFrame(
+                pred.detach().cpu().float().numpy(),
+                columns=resolved_target_features,
+            )
+
+            # Inverse-transform back to physical units
+            preprocessor = MeteoPreprocessor(
+                use_cyclic=exp_ctx.preprocessing.use_cyclic,
+                categorical_mode=exp_ctx.preprocessing.categorical_mode,
+            )
+
+            df_out = preprocessor.inverse_transform(df_pred)
+
+            # Add forecast timestamps
+            df_out.insert(0, "time", future_times)
+
+            # Save
+            current_date = datetime.now().strftime("%Y%m%d")
+            current_time = datetime.now().strftime("%H%M%S")
+
+            ckpt_base = os.path.splitext(os.path.basename(ckpt))[0]
+
+            # Convert pattern like 'epoch=19-val_loss=0.1025' → 'epoch-19-val_loss-0.1025'
+            ckpt_tag = ckpt_base.replace("=", "-")
+
+            # Remove any accidental double dashes (just in case)
+            ckpt_tag = re.sub(r"-+", "-", ckpt_tag)
+
+            # Build final CSV path
+            start_time_str = start_time.strftime("%Y%m%d_%H%M")
+            file_path = os.path.join(prediction_dir, 
+                                     f"{current_date}_{current_time}_{ckpt_tag}_{start_time_str}({when_key}).csv")
+            prediction_csvs[ckpt] = file_path
+
+            df_out.to_csv(file_path, index=False)
+            print(f"✅ prediction complete, saved: {file_path}")
 
 if __name__ == "__main__":
     warnings.filterwarnings("ignore")

@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 # import pytorch_lightning as pl
 from pytorch_lightning import LightningModule
-from DataPipelineWorkShop import ForecastContext, ModelContext
+from DataPipelineWorkShop import ForecastContext, ModelContext, MeteoPreprocessor, inverse_predictions_to_df
 from typing import List
 import logging
 import abc
@@ -122,29 +122,28 @@ class ProbSparseAttentionCore(nn.Module):
         out_top = torch.einsum("bhuk,bhkd->bhud", attn_top, v)  # (B,H,u,Dh)
 
         # default context for non-selected queries
-        # non-causal: masked mean over values
         if not causal:
             if key_valid is None:
-                context = v.mean(dim=2, keepdim=True)  # (B,H,1,Dh)
+                context = v.mean(dim=2, keepdim=True)
             else:
-                w = key_valid.unsqueeze(1).unsqueeze(-1).float()  # (B,1,S,1)
+                w = key_valid.unsqueeze(1).unsqueeze(-1).to(v.dtype)
                 denom = w.sum(dim=2, keepdim=True).clamp_min(1.0)
-                context = (v * w).sum(dim=2, keepdim=True) / denom  # (B,H,1,Dh)
+                context = (v * w).sum(dim=2, keepdim=True) / denom
             out = context.expand(B, H, S, Dh).contiguous()
         else:
-            # simplest safe choice: zeros (selected queries carry most signal)
-            out = torch.zeros((B, H, S, Dh), device=q.device, dtype=q.dtype)
+            out = torch.zeros((B, H, S, Dh), device=v.device, dtype=v.dtype)
 
         # scatter top outputs into out
-        out.scatter_(
-            dim=2,
-            index=top_idx.unsqueeze(-1).expand(B, H, u, Dh),
-            src=out_top
-        )
+        index = top_idx.unsqueeze(-1).expand(B, H, u, Dh)
+
+        if out_top.dtype != out.dtype:
+            out_top = out_top.to(out.dtype)
+
+        out.scatter_(dim=2, index=index, src=out_top)
 
         # zero out invalid query positions (matches your vanilla semantics)
         if query_valid is not None:
-            out = out * query_valid.unsqueeze(1).unsqueeze(-1).float()
+            out = out * query_valid.unsqueeze(1).unsqueeze(-1).to(out.dtype)
 
         return out
 
@@ -419,15 +418,14 @@ class ResamplingCloser(nn.Module):
 
     def forward(self, H: torch.Tensor, H_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         if H_mask is not None:
-            H = H * H_mask.unsqueeze(-1).float()
+            H = H * H_mask.unsqueeze(-1).to(H.dtype)
 
         B, S, D = H.shape
         if S != self.preset_len:
             H = F.interpolate(
                 H.transpose(1, 2),
                 size=self.preset_len,
-                mode="linear",
-                align_corners=False
+                mode="nearest"
             ).transpose(1, 2)
 
         return self.closer(H)
@@ -483,12 +481,15 @@ class MeteoInformerHourglassTransformer(LightningModule):
             closer_type=closer_type,
             preset_len=self.preset_len,
         )
+        
+        # --- preprocessor ---
+        self.preprocessor = MeteoPreprocessor()
 
         self.loss_fn = nn.MSELoss()
 
     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None):
         H, H_mask = self.starter(x, mask=mask)
-        out = self.closer(H)
+        out = self.closer(H, H_mask=H_mask)
         return out, H_mask
 
     def _compute_loss(self, preds, targets, y_mask):
@@ -506,6 +507,25 @@ class MeteoInformerHourglassTransformer(LightningModule):
         preds, _ = self.forward(x, mask=x_mask.any(-1))
         loss = self._compute_loss(preds, y, y_mask)
         self.log("train_loss", loss)
+        
+        # --- Periodic printing (every ~1/3 of an epoch) ---
+        if self.trainer is not None and self.trainer.train_dataloader is not None:
+            period = max(100, len(self.trainer.train_dataloader) // 3)
+            if batch_idx % period == 0:
+                df_pred_inv = inverse_predictions_to_df(
+                    preds,
+                    self.get_target_features(),
+                    self.preprocessor,
+                    self.horizon,
+                )
+                current_lr = self.trainer.optimizers[0].param_groups[0]["lr"]
+                logging.info(f"\n[Epoch {self.current_epoch} | Batch {batch_idx}]")
+                logging.info(f"Train Loss: {loss.item():.6f} | LR: {current_lr:.2e}")
+                logging.info(
+                    "Preds inverse-transformed:\n"
+                    + df_pred_inv.describe().loc[["mean", "std", "min", "max"]].to_string()
+                )
+                self.log("lr", current_lr, prog_bar=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -513,6 +533,24 @@ class MeteoInformerHourglassTransformer(LightningModule):
         preds, _ = self.forward(x, mask=x_mask.any(-1))
         loss = self._compute_loss(preds, y, y_mask)
         self.log("val_loss", loss, prog_bar=True)
+        
+        # --- Periodic validation printing ---
+        if self.trainer is not None and self.trainer.val_dataloaders is not None:
+            period = max(200, len(self.trainer.val_dataloaders) // 3)
+            if batch_idx % period == 0:
+                df_pred_inv = inverse_predictions_to_df(
+                    preds,
+                    self.get_target_features(),
+                    self.preprocessor,
+                    self.horizon,
+                )
+                logging.info(f"\nValidation: Epoch {self.current_epoch}, Batch {batch_idx}")
+                logging.info(f"Val Loss: {loss.item():.6f}")
+                logging.info(
+                    "Preds inverse-transformed:\n"
+                    + df_pred_inv.describe().loc[["mean", "std", "min", "max"]].to_string()
+                )
+
         return loss
 
     def predict_step(self, batch, batch_idx):

@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 # import pytorch_lightning as pl
 from pytorch_lightning import LightningModule
-from DataPipelineWorkShop import ForecastContext, ModelContext
+from DataPipelineWorkShop import ForecastContext, ModelContext, MeteoPreprocessor, inverse_predictions_to_df
 from typing import List
 import logging
 import abc
@@ -209,8 +209,6 @@ class EncoderBlock(nn.Module):
         x = residual + self.dropout2(ffn_out)
 
         return x
-
-
 
 ## ----- starter & closer style -----
 '''
@@ -441,7 +439,6 @@ class CloserType(Enum):
             if closer_type.string == name:
                 return closer_type
         raise ValueError(f"No closer type named '{name}'")
-
     
     def get_raw_target_features(self):
         return self.type.TARGETS
@@ -487,6 +484,9 @@ class MeteoVanillaTransformerEncoder(LightningModule):
             model_ctx=model_ctx,
             input_features=input_features,
         )
+        
+        # --- preprocessor ---
+        self.preprocessor = MeteoPreprocessor()
 
         # --- Loss ---
         self.loss_fn = nn.MSELoss()
@@ -544,10 +544,19 @@ class MeteoVanillaTransformerEncoder(LightningModule):
         if self.trainer is not None and self.trainer.train_dataloader is not None:
             period = max(100, len(self.trainer.train_dataloader) // 3)
             if batch_idx % period == 0:
+                df_pred_inv = inverse_predictions_to_df(
+                    preds,
+                    self.get_target_features(),
+                    self.preprocessor,
+                    self.horizon,
+                )
                 current_lr = self.trainer.optimizers[0].param_groups[0]["lr"]
                 logging.info(f"\n[Epoch {self.current_epoch} | Batch {batch_idx}]")
                 logging.info(f"Train Loss: {loss.item():.6f} | LR: {current_lr:.2e}")
-                logging.info(f"Preds: mean={preds.mean().item():.4f}, std={preds.std().item():.4f}")
+                logging.info(
+                    "Preds inverse-transformed:\n"
+                    + df_pred_inv.describe().loc[["mean", "std", "min", "max"]].to_string()
+                )
                 self.log("lr", current_lr, prog_bar=True)
 
         return loss
@@ -562,9 +571,18 @@ class MeteoVanillaTransformerEncoder(LightningModule):
         if self.trainer is not None and self.trainer.val_dataloaders is not None:
             period = max(200, len(self.trainer.val_dataloaders) // 3)
             if batch_idx % period == 0:
+                df_pred_inv = inverse_predictions_to_df(
+                    preds,
+                    self.get_target_features(),
+                    self.preprocessor,
+                    self.horizon,
+                )
                 logging.info(f"\nValidation: Epoch {self.current_epoch}, Batch {batch_idx}")
                 logging.info(f"Val Loss: {loss.item():.6f}")
-                logging.info(f"Preds: mean={preds.mean().item():.4f}, std={preds.std().item():.4f}")
+                logging.info(
+                    "Preds inverse-transformed:\n"
+                    + df_pred_inv.describe().loc[["mean", "std", "min", "max"]].to_string()
+                )
 
         return loss
 
@@ -621,9 +639,9 @@ class MeteoVanillaTransformerEncoder(LightningModule):
 
     def configure_optimizers(self):
         self._onecycle_cfg = {
-            "max_lr": 1e-4,
+            "max_lr": 3e-4,
             "div_factor": 25.0,
-            "final_div_factor": 1e3,
+            "final_div_factor": 1e2,
             "pct_start": 0.1,
             "anneal_strategy": "cos",
             "three_phase": False,

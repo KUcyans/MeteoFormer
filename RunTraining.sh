@@ -8,8 +8,8 @@ set -e
 mkdir -p logs
 
 # --- NEW: activate conda ----
-source /Users/yhjo/miniconda3/etc/profile.d/conda.sh
-# source /home/cyan_white_tower/miniconda3/etc/profile.d/conda.sh
+# source /Users/yhjo/miniconda3/etc/profile.d/conda.sh
+source /home/cyan_white_tower/miniconda3/etc/profile.d/conda.sh
 conda activate tempestransformer
 # ----------------------------
 

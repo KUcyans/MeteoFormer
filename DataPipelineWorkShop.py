@@ -330,9 +330,6 @@ class CategoricalEncoder:
         elif self.method == 'embedding':
             # Fill missing values and convert to integer IDs
             df[self.column] = df[self.column].astype('Int64')  # nullable integer type
-            # df[self.column] = df[self.column].fillna(0).astype(int)
-            # Clip to valid index range for embedding layer (0–num_classes−1)
-            # df[self.column] = df[self.column].clip(0, self.num_classes - 1)
             df[self.column] = df[self.column].mask(
             df[self.column].notna(),
             df[self.column].clip(0, self.num_classes - 1)
@@ -374,21 +371,37 @@ class MeteoPreprocessor:
         self.scaler = PseudoNormaliser()
 
     def transform(self, df):
-        if self.cyclic == True:
+        if self.cyclic is not None:
             df = self.cyclic.transform(df)
         df = self.encoder.transform(df)
         df = self.scaler.transform(df)
         return df
     
     def inverse_transform(self, df):
-        if self.cyclic == True:
-            df = self.scaler.inverse_transform(df)
+        df = self.scaler.inverse_transform(df)
         df = self.encoder.inverse_transform(df)
-        df = self.cyclic.inverse_transform(df)
+        if self.cyclic is not None:
+            df = self.cyclic.inverse_transform(df)
         return df
 
     # def __call__(self, data):
     #     return self.transform(data)
+
+def inverse_predictions_to_df(preds, target_features, preprocessor, horizon):
+    """
+    preds: (B, S, out_dim)
+    target_features: list[str]
+    preprocessor: MeteoPreprocessor instance
+    """
+    preds_f = preds[:, -horizon:, :].detach().cpu().float()
+
+    flat = preds_f.reshape(-1, preds_f.shape[-1]).numpy()
+
+    df_pred = pd.DataFrame(flat, columns=target_features)
+
+    df_pred_inv = preprocessor.inverse_transform(df_pred)
+
+    return df_pred_inv
 
 # ==============================================================
 class MeteoDataset(Dataset):
@@ -419,9 +432,9 @@ class MeteoDataset(Dataset):
         self,
         source_data: pd.DataFrame,
         forecast: ForecastContext,
-        preprocessing: PreprocessingContext
+        preprocessing: PreprocessingContext,
+        fixed_features: Optional[List[str]] = None,
     ):
-
 
         # store contexts
         self.forecast_ctx = forecast
@@ -456,7 +469,7 @@ class MeteoDataset(Dataset):
         self.source_data = self.preprocessor.transform(self.source_data)
 
         # --- Now drop metadata (AFTER preprocessing) ---
-        for col in ['station', 'time']:
+        for col in ["station", "time"]:
             if col in self.source_data.columns:
                 self.source_data = self.source_data.drop(columns=[col])
 
@@ -467,7 +480,19 @@ class MeteoDataset(Dataset):
                 self.source_data[col] = self.source_data[col].astype(float)
 
         # --- Identify usable columns ---
-        self.available_features = self._validate_features()
+        if fixed_features is None:
+            # Train dataset decides feature schema
+            self.available_features = self._validate_features(drop_all_nan=True)
+        else:
+            # Val/test follow train feature schema
+            missing = [c for c in fixed_features if c not in self.source_data.columns]
+            if missing:
+                raise ValueError(f"Fixed features missing after preprocessing: {missing}")
+
+            self.available_features = list(fixed_features)
+
+            # Optional: still print NaN report for val/test, but don't change features
+            self._validate_features(drop_all_nan=False)
 
         # --- Subset to usable columns ---
         self.source_data = self.source_data[self.available_features]
@@ -478,12 +503,14 @@ class MeteoDataset(Dataset):
         # --- Build sliding windows ---
         self.windows = self._make_windows()
 
-        # === 🧾 Summary ===
+        # === Summary ===
         if len(self.windows) > 0:
             x0, y0 = self.windows[0]
-            print(f"📊 MeteoDataset built: {len(self.windows)} samples | "
+            print(
+                f"📊 MeteoDataset built: {len(self.windows)} samples | "
                 f"Input shape: {x0.shape} | Target shape: {y0.shape} | "
-                f"Features: {len(self.available_features)} ({self.available_features})")
+                f"Features: {len(self.available_features)} ({self.available_features})"
+            )
         else:
             print("⚠️ MeteoDataset built with 0 samples!")
 
@@ -492,13 +519,27 @@ class MeteoDataset(Dataset):
     def _get_available_features(self) -> List[str]:
         return self.available_features
     
-    def _validate_features(self) -> List[str]:
-        """Keep all declared columns; warn if some are entirely NaN."""
+    def _validate_features(self, drop_all_nan: bool = True) -> List[str]:
         cols = list(self.source_data.columns)
+
         all_nan = [c for c in cols if self.source_data[c].isna().all()]
+        partial_nan = [
+            c for c in cols
+            if self.source_data[c].isna().any() and not self.source_data[c].isna().all()
+        ]
 
         if all_nan:
-            print(f"⚠️ Columns all NaN but retained for consistency: {all_nan}")
+            print(f"⚠️ Columns all NaN: {all_nan}")
+
+        if partial_nan:
+            print("⚠️ Columns partially NaN:")
+            for c in partial_nan:
+                n_nan = self.source_data[c].isna().sum()
+                frac = self.source_data[c].isna().mean()
+                print(f"  → {c}: {n_nan} NaNs ({frac:.2%})")
+
+        if drop_all_nan:
+            cols = [c for c in cols if c not in all_nan]
 
         return cols
 
@@ -584,10 +625,34 @@ def temporal_split(df: pd.DataFrame, fc) -> tuple[pd.DataFrame, pd.DataFrame, pd
 
 
 def make_datasets(df: pd.DataFrame, ctx: ExperimentContext):
-    df_train, df_val, df_test = temporal_split(df, ctx.forecast)   # a pure function, pure output
-    train_ds = MeteoDataset(df_train, ctx.forecast, ctx.preprocessing)
-    val_ds   = MeteoDataset(df_val,   ctx.forecast, ctx.preprocessing)
-    test_ds  = MeteoDataset(df_test,  ctx.forecast, ctx.preprocessing)
+    df_train, df_val, df_test = temporal_split(df, ctx.forecast)
+
+    train_ds = MeteoDataset(
+        df_train,
+        ctx.forecast,
+        ctx.preprocessing,
+        fixed_features=None,
+    )
+
+    train_features = train_ds._get_available_features()
+
+    val_ds = MeteoDataset(
+        df_val,
+        ctx.forecast,
+        ctx.preprocessing,
+        fixed_features=train_features,
+    )
+
+    test_ds = MeteoDataset(
+        df_test,
+        ctx.forecast,
+        ctx.preprocessing,
+        fixed_features=train_features,
+    )
+
+    print(f"✅ {len(train_features)} features in make_datasets")
+    print(train_features)
+
     return train_ds, val_ds, test_ds
 
 
@@ -599,9 +664,25 @@ def make_dataloaders(df: pd.DataFrame, ctx: ExperimentContext,batch_size: int=12
     return train_dl, val_dl, test_dl
 
 
-def make_predict_loader(df_future: pd.DataFrame, ctx: ExperimentContext,
-                        batch_size: int, num_workers: int = 2):
-    pred_ds = MeteoDataset(df_future, ctx.forecast, ctx.preprocessing)
-    pred_dl = DataLoader(pred_ds, batch_size=batch_size,
-                         shuffle=False, num_workers=num_workers)
+def make_predict_loader(
+    df_future: pd.DataFrame,
+    ctx: ExperimentContext,
+    batch_size: int,
+    num_workers: int = 2,
+    fixed_features: Optional[List[str]] = None,
+):
+    pred_ds = MeteoDataset(
+        df_future,
+        ctx.forecast,
+        ctx.preprocessing,
+        fixed_features=fixed_features,
+    )
+
+    pred_dl = DataLoader(
+        pred_ds,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+    )
+
     return pred_dl

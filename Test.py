@@ -69,7 +69,8 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import TQDMProgressBar
 from meteostat import Point
 from DataPipelineWorkShop import get_hourly_example, PreprocessingContext, ForecastContext, ModelContext, ExperimentContext, make_dataloaders, make_single_window_dataframe, MeteoPreprocessor
-from VanillaTransformer import MeteoVanillaTransformerEncoder
+from VanillaTransformer import MeteoVanillaTransformerEncoder, CloserType
+from Informer import MeteoInformerHourglassTransformer
 # ===========================================================
 import matplotlib.pyplot as plt
 sys.path.append('Utils/')
@@ -145,14 +146,16 @@ def get_contexts(config, log_dir):
     pre_ctx   = PreprocessingContext(**ctx_dict["preprocessing"])
     fc_ctx    = ForecastContext(**ctx_dict["forecast"])
     model_ctx = ModelContext(**ctx_dict["model"])
+    closer_type = CloserType.from_string(ctx_dict["closer_type"])
     target_features = ctx_dict["target_features"]
-
+    logging.info(f"Target features: {target_features}")
+    
     exp_ctx = ExperimentContext(
         preprocessing=pre_ctx,
         forecast=fc_ctx,
         model=model_ctx
     )
-    return exp_ctx, target_features
+    return exp_ctx, closer_type
 
 # ===========================================================
 def extract_metrics_from_trainer(trainer):
@@ -202,12 +205,11 @@ def run():
     os.makedirs(date_time_dir, exist_ok=True)
 
     # 1. Load experiment context
-    exp_ctx, target_features = get_contexts(config, date_time_dir)
-    logging.info(f"Target features: {target_features}")
-
+    exp_ctx, closer_type = get_contexts(config, date_time_dir)
+    
     # 2. Prepare dataset
     kbh = Point(lat=55.6761, lon=12.5683)
-    df_raw = get_hourly_example(kbh, start=datetime(2016, 1, 1), end=datetime(2018, 12, 31))
+    df_raw = get_hourly_example(kbh, start=datetime(2022, 1, 1), end=datetime(2022, 12, 31))
     _, _, test_dl = make_dataloaders(
         df_raw, exp_ctx,
         batch_size=config["batch_size"],
@@ -228,11 +230,20 @@ def run():
 
         logging.info(f"🔍 Testing checkpoint: {ckpt_name}")
 
-        model = MeteoVanillaTransformerEncoder.load_from_checkpoint(
-            ckpt,
+        # model = MeteoVanillaTransformerEncoder.load_from_checkpoint(
+        #     ckpt,
+        #     model_ctx=exp_ctx.model,
+        #     forecast_ctx=exp_ctx.forecast,
+        #     input_features=input_features,
+        #     closer_type=closer_type
+        # )
+        
+        model = MeteoInformerHourglassTransformer.load_from_checkpoint(
+            checkpoint_path=ckpt,
             model_ctx=exp_ctx.model,
             forecast_ctx=exp_ctx.forecast,
             input_features=input_features,
+            closer_type=closer_type
         )
         model.eval()
 
