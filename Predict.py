@@ -244,6 +244,8 @@ def run():
     kbh = Point(lat=55.6761, lon=12.5683)
     what_year = 2021
     start_times = {
+        "new_year_formid" : datetime(what_year, 1, 1, 0, 0),
+        "new_year_eftmid" : datetime(what_year, 1, 1, 12, 0),
         "vernal_equinox_formid" : datetime(what_year, 3, 21, 0, 0),
         "vernal_equinox_eftmid" : datetime(what_year, 3, 21, 12, 0),
         "sankthans_formid" : datetime(what_year, 6, 21, 0, 0),
@@ -287,21 +289,21 @@ def run():
                 "Prediction dataset feature schema does not match checkpoint feature schema."
             )
             
-            # model = MeteoVanillaTransformerEncoder.load_from_checkpoint(
-            #     ckpt,
-            #     model_ctx=exp_ctx.model,
-            #     forecast_ctx=exp_ctx.forecast,
-            #     input_features=trained_feature_list,
-            #     closer_type=closer_type
-            # )
-            
-            model = MeteoInformerHourglassTransformer.load_from_checkpoint(
-                checkpoint_path=ckpt,
+            model = MeteoVanillaTransformerEncoder.load_from_checkpoint(
+                ckpt,
                 model_ctx=exp_ctx.model,
                 forecast_ctx=exp_ctx.forecast,
                 input_features=trained_feature_list,
                 closer_type=closer_type
             )
+            
+            # model = MeteoInformerHourglassTransformer.load_from_checkpoint(
+            #     checkpoint_path=ckpt,
+            #     model_ctx=exp_ctx.model,
+            #     forecast_ctx=exp_ctx.forecast,
+            #     input_features=trained_feature_list,
+            #     closer_type=closer_type
+            # )
 
             model.eval()
 

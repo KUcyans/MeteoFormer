@@ -42,6 +42,8 @@ def isClean(df: pd.DataFrame) -> bool:
     return _is_clean
 
 # ==============================================================
+#                       Contexts
+# ==============================================================
 @dataclass(frozen=True)
 class PreprocessingContext:
     use_cyclic: bool = True
@@ -71,13 +73,69 @@ class ModelContext:
     closer_num_layers: int
     starter_activation: str = "gelu"
     closer_activation: str = "silu"
+    input_position_type: str = "absolute"
+    attention_type: str = "basic"
+
+@dataclass(frozen=True)
+class TrainingContext:
+    optimizer: str = "AdamW"
+    scheduler: str = "OneCycleLR"
+
+    max_lr: float = 3e-4
+    weight_decay: float = 1e-3
+    beta1: float = 0.9
+    beta2: float = 0.999
+    eps: float = 1e-8
+
+    div_factor: float = 25.0
+    final_div_factor: float = 1e2
+    pct_start: float = 0.1
+    anneal_strategy: str = "cos"
+    three_phase: bool = False
 
 @dataclass(frozen=True)
 class ExperimentContext:
     preprocessing: PreprocessingContext
     forecast: ForecastContext
-    model: ModelContext
+    model: ModelContext 
 
+def build_optimizer_and_scheduler(model, trainer, training_ctx):
+    if training_ctx.optimizer.lower() == "adamw":
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=training_ctx.max_lr,
+            weight_decay=training_ctx.weight_decay,
+            betas=(training_ctx.beta1, training_ctx.beta2),
+            eps=training_ctx.eps,
+        )
+    else:
+        raise ValueError(f"Unsupported optimizer: {training_ctx.optimizer}")
+
+    total_steps = trainer.estimated_stepping_batches
+
+    if training_ctx.scheduler.lower() == "onecyclelr":
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(
+            optimizer,
+            max_lr=training_ctx.max_lr,
+            total_steps=total_steps,
+            pct_start=training_ctx.pct_start,
+            anneal_strategy=training_ctx.anneal_strategy,
+            div_factor=training_ctx.div_factor,
+            final_div_factor=training_ctx.final_div_factor,
+            three_phase=training_ctx.three_phase,
+        )
+    else:
+        raise ValueError(f"Unsupported scheduler: {training_ctx.scheduler}")
+
+    return {
+        "optimizer": optimizer,
+        "lr_scheduler": {
+            "scheduler": scheduler,
+            "interval": "step",
+            "frequency": 1,
+        },
+    }
+    
 # ==============================================================
 def make_single_window_dataframe(location: Point, 
                                  start_time: datetime, 
@@ -651,7 +709,6 @@ def make_datasets(df: pd.DataFrame, ctx: ExperimentContext):
     )
 
     print(f"✅ {len(train_features)} features in make_datasets")
-    print(train_features)
 
     return train_ds, val_ds, test_ds
 

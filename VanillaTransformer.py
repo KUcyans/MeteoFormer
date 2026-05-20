@@ -3,37 +3,50 @@ import torch.nn as nn
 import torch.nn.functional as F
 # import pytorch_lightning as pl
 from pytorch_lightning import LightningModule
-from DataPipelineWorkShop import ForecastContext, ModelContext, MeteoPreprocessor, inverse_predictions_to_df
+from DataPipelineWorkShop import (ForecastContext, 
+                                  ModelContext, 
+                                  TrainingContext,
+                                  MeteoPreprocessor,
+                                  inverse_predictions_to_df,
+                                  build_optimizer_and_scheduler)
+from InputPositionType import build_position_module
+from AttentionCore import build_attention_core
 from typing import List
 import logging
 import abc
 from enum import Enum
 # 30 sec
-# 
 
+# -------------- Attention Mechanishm -------------------
 class MultiHeadAttention(nn.Module):
-    """
-    Multi-head self-attention with built-in NaN and causal masking support.
-    """
-    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1):
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        dropout: float = 0.1,
+        attention_type: str = "basic",
+    ):
         super().__init__()
         assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
 
         self.d_model = d_model
         self.n_heads = n_heads
         self.head_dim = d_model // n_heads
-        self.scale = self.head_dim ** -0.5
 
-        # QKV linear projections
         self.q_proj = nn.Linear(d_model, d_model)
         self.k_proj = nn.Linear(d_model, d_model)
         self.v_proj = nn.Linear(d_model, d_model)
 
-        # Output projection
+        self.core = build_attention_core(
+            attention_type=attention_type,
+            n_heads=n_heads,
+            head_dim=self.head_dim,
+            dropout=dropout,
+        )
+
         self.out_proj = nn.Linear(d_model, d_model)
-
         self.dropout = nn.Dropout(dropout)
-
+        
     # ==============================================================
     def _make_attention_mask(self, x_mask: torch.Tensor, causal: bool) -> torch.Tensor:
         """
@@ -90,13 +103,12 @@ class MultiHeadAttention(nn.Module):
             attn_mask = self._make_attention_mask(mask, causal)
 
             # Convert to "True = mask out" for SDPA
-            attn_mask = ~attn_mask
+            # attn_mask = ~attn_mask
 
-        attn_output = F.scaled_dot_product_attention(
+        attn_output = self.core(
             q, k, v,
             attn_mask=attn_mask,
-            dropout_p=self.dropout.p if self.training else 0.0,
-            is_causal=False
+            causal=causal,
         )
 
         attn_output = attn_output.transpose(1, 2).reshape(B, S, D)
@@ -171,11 +183,12 @@ class EncoderBlock(nn.Module):
                  n_heads: int,
                  d_ff: int,
                  dropout: float = 0.1,
-                 activation: str = 'gelu'):
+                 activation: str = 'gelu',
+                 attention_type:str = 'basic'):
         super().__init__()
 
         self.norm1 = nn.LayerNorm(d_model)
-        self.attn = MultiHeadAttention(d_model, n_heads, dropout=dropout)
+        self.attn = MultiHeadAttention(d_model, n_heads, dropout=dropout, attention_type=attention_type)
         self.dropout1 = nn.Dropout(dropout)
 
         self.norm2 = nn.LayerNorm(d_model)
@@ -238,6 +251,8 @@ class StarterMeteoVanillaTransformerEncoder(nn.Module):
         num_layers = model_ctx.starter_num_layers
         dropout = model_ctx.dropout
         activation = model_ctx.starter_activation
+        input_position_type = model_ctx.input_position_type
+        attention_type = model_ctx.attention_type
 
         window = forecast_ctx.window
         self.causal = forecast_ctx.causal
@@ -248,9 +263,12 @@ class StarterMeteoVanillaTransformerEncoder(nn.Module):
         # --- Input projection ---
         self.input_proj = nn.Linear(self.feature_dim, d_model)
 
-        # --- Learnable absolute positional embedding ---
-        self.pos_embedding = nn.Parameter(torch.zeros(1, window, d_model))
-        nn.init.trunc_normal_(self.pos_embedding, std=0.02)
+        # --- Positional encoding: absolute, sinusoidal, or no positional encoding ---
+        self.position = build_position_module(
+            input_position_type=input_position_type,
+            d_model=d_model,
+            max_len=window,
+        )
 
         # --- Stack of encoder blocks ---
         self.layers = nn.ModuleList([
@@ -260,6 +278,7 @@ class StarterMeteoVanillaTransformerEncoder(nn.Module):
                 d_ff=d_ff,
                 dropout=dropout,
                 activation=activation,
+                attention_type=attention_type
             )
             for _ in range(num_layers)
         ])
@@ -271,7 +290,7 @@ class StarterMeteoVanillaTransformerEncoder(nn.Module):
         B, S, _ = x.shape
 
         x = self.input_proj(x)
-        x = x + self.pos_embedding[:, :S, :]
+        x = self.position(x)
 
         for layer in self.layers:
             x = layer(x, mask=mask, causal=self.causal)
@@ -461,13 +480,15 @@ class MeteoVanillaTransformerEncoder(LightningModule):
         forecast_ctx: ForecastContext,
         input_features: List[str],
         closer_type: CloserType,
+        training_ctx: TrainingContext
     ):
         super().__init__()
-        self.save_hyperparameters(ignore=["model_ctx", "forecast_ctx"])
+        self.save_hyperparameters(ignore=["model_ctx", "forecast_ctx", "training_ctx"])
 
         # store contexts
         self.model_ctx = model_ctx
         self.forecast_ctx = forecast_ctx
+        self.training_ctx =training_ctx
         self.horizon = forecast_ctx.horizon
 
         # store features
@@ -636,63 +657,13 @@ class MeteoVanillaTransformerEncoder(LightningModule):
         # return only the last horizon (forecast window)
         return preds[:, -self.horizon:, :]
 
-
     def configure_optimizers(self):
-        self._onecycle_cfg = {
-            "max_lr": 3e-4,
-            "div_factor": 25.0,
-            "final_div_factor": 1e2,
-            "pct_start": 0.1,
-            "anneal_strategy": "cos",
-            "three_phase": False,
-        }
-        self._onecycle_cfg["min_lr"] = (
-            self._onecycle_cfg["max_lr"]
-            / (self._onecycle_cfg["div_factor"] * self._onecycle_cfg["final_div_factor"])
-        )
-        self._onecycle_cfg["initial_lr"] = (
-            self._onecycle_cfg["max_lr"] / self._onecycle_cfg["div_factor"]
-        )
-        
-        self._optimizer_cfg = {
-            "optimizer": "AdamW",
-            "max_lr": self._onecycle_cfg["max_lr"],
-            "weight_decay": 1e-3,
-            "beta1": 0.9,
-            "beta2": 0.999,
-            "eps": 1e-8,
-        }
-
-        optimizer = torch.optim.AdamW(
-            self.parameters(),
-            lr=self._optimizer_cfg["max_lr"],
-            weight_decay=self._optimizer_cfg["weight_decay"],
-            betas=(self._optimizer_cfg["beta1"], self._optimizer_cfg["beta2"]),
-            eps=self._optimizer_cfg["eps"],
+        return build_optimizer_and_scheduler(
+            model=self,
+            trainer=self.trainer,
+            training_ctx=self.training_ctx,
         )
 
-        # Compute total steps for OneCycleLR
-        total_steps = self.trainer.estimated_stepping_batches
-        # OneCycleLR configuration
-        scheduler = torch.optim.lr_scheduler.OneCycleLR(
-            optimizer,
-            max_lr=self._onecycle_cfg["max_lr"],
-            total_steps=total_steps,
-            pct_start=self._onecycle_cfg["pct_start"],
-            anneal_strategy=self._onecycle_cfg["anneal_strategy"],
-            div_factor=self._onecycle_cfg["div_factor"],
-            final_div_factor=self._onecycle_cfg["final_div_factor"],
-            three_phase=self._onecycle_cfg["three_phase"],
-        )
-
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {
-                "scheduler": scheduler,
-                "interval": "step",   # OneCycle updates every step, not epoch
-                "frequency": 1,
-            },
-        }
     def _total_steps(self):
         try:
             return len(self.trainer.train_dataloader) * self.trainer.max_epochs
@@ -702,12 +673,25 @@ class MeteoVanillaTransformerEncoder(LightningModule):
         
     def get_onecycle_config(self):
         return {
-            **self._onecycle_cfg,
-            "total_steps": self._total_steps()
+            "scheduler": self.training_ctx.scheduler,
+            "max_lr": self.training_ctx.max_lr,
+            "div_factor": self.training_ctx.div_factor,
+            "final_div_factor": self.training_ctx.final_div_factor,
+            "pct_start": self.training_ctx.pct_start,
+            "anneal_strategy": self.training_ctx.anneal_strategy,
+            "three_phase": self.training_ctx.three_phase,
+            "total_steps": self._total_steps(),
         }
-        
+
     def get_optimizer_config(self):
-        return dict(self._optimizer_cfg)
+        return {
+            "optimizer": self.training_ctx.optimizer,
+            "max_lr": self.training_ctx.max_lr,
+            "weight_decay": self.training_ctx.weight_decay,
+            "beta1": self.training_ctx.beta1,
+            "beta2": self.training_ctx.beta2,
+            "eps": self.training_ctx.eps,
+        }
     
     def get_target_features(self):
         return self.closer.get_target_features()

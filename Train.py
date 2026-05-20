@@ -69,7 +69,13 @@ from datetime import datetime
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, TQDMProgressBar
 from meteostat import Point
-from DataPipelineWorkShop import get_hourly_example, PreprocessingContext, ForecastContext, ModelContext, ExperimentContext,  make_dataloaders
+from DataPipelineWorkShop import (get_hourly_example, 
+                                  PreprocessingContext, 
+                                  ForecastContext, 
+                                  ModelContext, 
+                                  TrainingContext, 
+                                  ExperimentContext, 
+                                  make_dataloaders)
 from VanillaTransformer import MeteoVanillaTransformerEncoder, CloserType
 from Informer import MeteoInformerHourglassTransformer
 
@@ -80,10 +86,10 @@ def parse_args():
     parser.add_argument("--window_size", type=int, default=72)
     parser.add_argument("--horizon", type=int, default=12)
     parser.add_argument("--batch_size", type=int, default=512)
-    parser.add_argument("--n_heads", type=int, default=2)
+    parser.add_argument("--n_heads", type=int, default=4)
     parser.add_argument("--d_model", type=int, default=256)
-    parser.add_argument("--d_ff", type=int, default=1048)
-    parser.add_argument("--starter_num_layers", type=int, default=4)
+    parser.add_argument("--d_ff", type=int, default=1024)
+    parser.add_argument("--starter_num_layers", type=int, default=6)
     parser.add_argument("--closer_num_layers", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.3)
     parser.add_argument("--epochs", type=int, default=100)
@@ -95,6 +101,22 @@ def parse_args():
         # default="thermodynamic",
         default="thermo",
         help="Task type: thermo | thermodynamic | wind | precipitation"
+    )
+    parser.add_argument(
+        "--input_position_type",
+        type=str,
+        default="none",
+        # default="absolute",
+        # default="sinusoidal",
+        help="Input Positional Encoding type: none | absolute | sinusoidal"
+    )
+    parser.add_argument(
+        "--attention_type",
+        type=str,
+        default="basic",
+        # default="t5",
+        # default="alibi",
+        help="Self-Attention Mechanism type: basic | t5 | alibi | rope"
     )
     parser.add_argument("--log_dir", type=str, default="./logs")
     parser.add_argument("--date", type=str, required=True, help="Execution date in YYYYMMDD format")
@@ -182,6 +204,8 @@ def write_benchmark_summary(start_time, end_time, trainer, config, log_file_path
         "d_ff": config.get("d_ff"),
         "starter_num_layers": config.get("starter_num_layers"),
         "closer_num_layers": config.get("closer_num_layers"),
+        "input_position_type" : config.get("input_position_type"),
+        "attention_type" : config.get("attention_type"),
         "dropout": config.get("dropout"),
         "window": config.get("window_size"),
         "horizon": config.get("horizon"),
@@ -264,6 +288,8 @@ def build_contexts(config, log_dir, closer_type):
         d_ff=config["d_ff"],
         starter_num_layers=config["starter_num_layers"],
         closer_num_layers=config["closer_num_layers"],
+        input_position_type=config["input_position_type"],
+        attention_type=config["attention_type"],
         dropout=config["dropout"]
     )
     exp_ctx = ExperimentContext(
@@ -271,17 +297,33 @@ def build_contexts(config, log_dir, closer_type):
         forecast=fc_ctx,
         model=model_ctx
     )
+    training_ctx = TrainingContext(
+        optimizer="AdamW",
+        scheduler="OneCycleLR",
+        max_lr=3e-4,
+        weight_decay=1e-3,
+        beta1=0.9,
+        beta2=0.999,
+        eps=1e-8,
+        div_factor=25.0,
+        final_div_factor=1e2,
+        pct_start=0.1,
+        anneal_strategy="cos",
+        three_phase=False
+    )
+    
     ctx_json_path = os.path.join(log_dir, f"{config['date']}_{config['time']}_context.json")
     with open(ctx_json_path, "w") as f:
         json.dump({
             "preprocessing": vars(pre_ctx),
             "forecast"     : vars(fc_ctx),
             "model"        : vars(model_ctx),
+            "training"     : vars(training_ctx),
             "closer_type"  : closer_type.string,
             "target_features": closer_type.get_raw_target_features(),
         }, f, indent=2)
 
-    return fc_ctx, model_ctx, exp_ctx
+    return fc_ctx, model_ctx, exp_ctx, training_ctx
 
 # ===========================================================
 
@@ -335,7 +377,7 @@ def run():
     closer_type = CloserType.from_string(config["closer_type"])
     
     # context objects
-    fc_ctx, model_ctx, exp_ctx = build_contexts(config, log_dir, closer_type)
+    fc_ctx, model_ctx, exp_ctx, training_ctx = build_contexts(config, log_dir, closer_type)
 
     logging.info("📦 Building DataModule...")
     
@@ -348,19 +390,21 @@ def run():
     logging.info(f"Available features: {available_feature_list}")
 
     logging.info("⚙️ Building model...")
-    # model = MeteoVanillaTransformerEncoder(
-    #     model_ctx=model_ctx,
-    #     forecast_ctx=fc_ctx,
-    #     input_features=available_feature_list,
-    #     closer_type=closer_type
-    # )
-    
-    model = MeteoInformerHourglassTransformer(
+    model = MeteoVanillaTransformerEncoder(
         model_ctx=model_ctx,
         forecast_ctx=fc_ctx,
         input_features=available_feature_list,
-        closer_type=closer_type
+        closer_type=closer_type,
+        training_ctx=training_ctx
     )
+    
+    # model = MeteoInformerHourglassTransformer(
+    #     model_ctx=model_ctx,
+    #     forecast_ctx=fc_ctx,
+    #     input_features=available_feature_list,
+    #     closer_type=closer_type,
+    #     training_ctx=training_ctx
+    # )
 
     checkpoint_dir = os.path.join(log_dir, "checkpoints")
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -408,8 +452,11 @@ def run():
     logging.info(f"🧪 {config['tracker']} log: {tracker_log}")
     
     if config["tracker"] == "wandb":
-        try: wandb.finish()
-        except:pass
+        try:
+            import wandb
+            wandb.finish()
+        except Exception:
+            pass
     elif config["tracker"] == "mlflow":
         from mlflow import end_run
         try: end_run()

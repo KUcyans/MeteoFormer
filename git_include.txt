@@ -22,3 +22,5 @@ TemperaturePrediction.ipynb
 Test.py
 RunTesting.sh
 Informer.py
+AttentionCore.py
+InputPositionType.py

@@ -19,8 +19,8 @@ pkill -f "python3 Predict.py" || true
 sleep 1
 
 # ---- manual selection here ----
-DATE=20260519
-TIME=193347
+DATE=20260520
+TIME=140934
 # -------------------------------
 RUN_DATE=$(date +%Y%m%d)
 RUN_TIME=$(date +%H%M%S)

@@ -3,7 +3,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 # import pytorch_lightning as pl
 from pytorch_lightning import LightningModule
-from DataPipelineWorkShop import ForecastContext, ModelContext, MeteoPreprocessor, inverse_predictions_to_df
+from DataPipelineWorkShop import (ForecastContext, 
+                                  ModelContext, 
+                                  MeteoPreprocessor,
+                                  TrainingContext, 
+                                  inverse_predictions_to_df,
+                                  build_optimizer_and_scheduler)
+from InputPositionType import build_position_module
+from AttentionCore import build_attention_core
 from typing import List
 import logging
 import abc
@@ -317,8 +324,8 @@ class StarterMeteoInformerHourglassEncoder(nn.Module):
 
     def __init__(
         self,
-        model_ctx,
-        forecast_ctx,
+        model_ctx: ModelContext,
+        forecast_ctx: ForecastContext,
         input_features: List[str],
         distil: bool = True,
         factor: int = 5,
@@ -334,6 +341,7 @@ class StarterMeteoInformerHourglassEncoder(nn.Module):
         num_layers = model_ctx.starter_num_layers
         dropout = model_ctx.dropout
         activation = model_ctx.starter_activation
+        input_position_type = model_ctx.input_position_type
 
         self.causal = forecast_ctx.causal
         self.window = forecast_ctx.window
@@ -341,9 +349,16 @@ class StarterMeteoInformerHourglassEncoder(nn.Module):
 
         self.input_proj = nn.Linear(self.feature_dim, d_model)
 
-        # positional embedding defined on the input window grid (S_in)
-        self.pos_embedding = nn.Parameter(torch.zeros(1, self.window, d_model))
-        nn.init.trunc_normal_(self.pos_embedding, std=0.02)
+        # # positional embedding defined on the input window grid (S_in)
+        # self.pos_embedding = nn.Parameter(torch.zeros(1, self.window, d_model))
+        # nn.init.trunc_normal_(self.pos_embedding, std=0.02)
+        
+        # --- Positional encoding: absolute, sinusoidal, or no positional encoding ---
+        self.position = build_position_module(
+                input_position_type=input_position_type,
+                d_model=d_model,
+                max_len=self.window,
+            )
 
         self.layers = nn.ModuleList([
             InformerEncoderLayer(
@@ -379,7 +394,7 @@ class StarterMeteoInformerHourglassEncoder(nn.Module):
                 mask = mask[:, -self.window:]
 
         x = self.input_proj(x)
-        x = x + self.pos_embedding[:, :x.shape[1], :]
+        x = self.position(x)
 
         cur_mask = mask
 
@@ -449,23 +464,24 @@ class MeteoInformerHourglassTransformer(LightningModule):
 
     def __init__(
         self,
-        model_ctx,
-        forecast_ctx,
+        model_ctx: ModelContext,
+        forecast_ctx: ForecastContext,
+        training_ctx: TrainingContext,
         input_features: List[str],
-        closer_type,                 # your CloserType enum
+        closer_type: CloserType,
         preset_len: Optional[int] = None,
         distil: bool = True,
         factor: int = 5,
     ):
         super().__init__()
-        self.save_hyperparameters(ignore=["model_ctx", "forecast_ctx"])
+        self.save_hyperparameters(ignore=["model_ctx", "forecast_ctx", "training_ctx"])
 
         self.model_ctx = model_ctx
         self.forecast_ctx = forecast_ctx
+        self.training_ctx = training_ctx
         self.horizon = forecast_ctx.horizon
         self.input_features = input_features
         self.preset_len = preset_len if preset_len is not None else forecast_ctx.window
-
 
         self.starter = StarterMeteoInformerHourglassEncoder(
             model_ctx=model_ctx,
@@ -559,56 +575,33 @@ class MeteoInformerHourglassTransformer(LightningModule):
         return preds[:, -self.horizon:, :]
 
     def configure_optimizers(self):
-        # copy your existing OneCycle config, unchanged
-        self._onecycle_cfg = {
-            "max_lr": 3e-4,
-            "div_factor": 25.0,
-            "final_div_factor": 1e2,
-            "pct_start": 0.1,
-            "anneal_strategy": "cos",
-            "three_phase": False,
-        }
-        self._onecycle_cfg["min_lr"] = (
-            self._onecycle_cfg["max_lr"]
-            / (self._onecycle_cfg["div_factor"] * self._onecycle_cfg["final_div_factor"])
-        )
-        self._onecycle_cfg["initial_lr"] = (
-            self._onecycle_cfg["max_lr"] / self._onecycle_cfg["div_factor"]
+        return build_optimizer_and_scheduler(
+            model=self,
+            trainer=self.trainer,
+            training_ctx=self.training_ctx,
         )
 
-        optimizer = torch.optim.AdamW(
-            self.parameters(),
-            lr=self._onecycle_cfg["max_lr"],
-            weight_decay=1e-3,
-            betas=(0.9, 0.999),
-            eps=1e-8,
-        )
-
-        total_steps = self.trainer.estimated_stepping_batches
-        scheduler = torch.optim.lr_scheduler.OneCycleLR(
-            optimizer,
-            max_lr=self._onecycle_cfg["max_lr"],
-            total_steps=total_steps,
-            pct_start=self._onecycle_cfg["pct_start"],
-            anneal_strategy=self._onecycle_cfg["anneal_strategy"],
-            div_factor=self._onecycle_cfg["div_factor"],
-            final_div_factor=self._onecycle_cfg["final_div_factor"],
-            three_phase=self._onecycle_cfg["three_phase"],
-        )
-
+    def get_onecycle_config(self):
         return {
-            "optimizer": optimizer,
-            "lr_scheduler": {"scheduler": scheduler, "interval": "step", "frequency": 1},
+            "scheduler": self.training_ctx.scheduler,
+            "max_lr": self.training_ctx.max_lr,
+            "div_factor": self.training_ctx.div_factor,
+            "final_div_factor": self.training_ctx.final_div_factor,
+            "pct_start": self.training_ctx.pct_start,
+            "anneal_strategy": self.training_ctx.anneal_strategy,
+            "three_phase": self.training_ctx.three_phase,
+            "total_steps": self._total_steps(),
+        }
+
+    def get_optimizer_config(self):
+        return {
+            "optimizer": self.training_ctx.optimizer,
+            "max_lr": self.training_ctx.max_lr,
+            "weight_decay": self.training_ctx.weight_decay,
+            "beta1": self.training_ctx.beta1,
+            "beta2": self.training_ctx.beta2,
+            "eps": self.training_ctx.eps,
         }
 
     def get_target_features(self):
         return self.closer.get_target_features()
-
-    def get_onecycle_config(self):
-        # small helper as in your vanilla
-        def _total_steps():
-            try:
-                return len(self.trainer.train_dataloader) * self.trainer.max_epochs
-            except Exception:
-                return 1000
-        return {**self._onecycle_cfg, "total_steps": _total_steps()}
