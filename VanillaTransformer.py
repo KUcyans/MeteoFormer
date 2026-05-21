@@ -101,9 +101,8 @@ class MultiHeadAttention(nn.Module):
         if mask is not None:
             # (B,S) --> (B,H,S,S)
             attn_mask = self._make_attention_mask(mask, causal)
-
-            # Convert to "True = mask out" for SDPA
-            # attn_mask = ~attn_mask
+            # True: accounted in attention
+            # False: excluded from attention
 
         attn_output = self.core(
             q, k, v,

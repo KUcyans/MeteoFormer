@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-train_meteo_transformer.py
+Train.py
 --------------------------
 Train a vanilla Transformer encoder for meteorological sequence-to-sequence forecasting.
 """
@@ -78,7 +78,11 @@ from DataPipelineWorkShop import (get_hourly_example,
                                   make_dataloaders)
 from VanillaTransformer import MeteoVanillaTransformerEncoder, CloserType
 from Informer import MeteoInformerHourglassTransformer
-
+# ===========================================================
+import matplotlib.pyplot as plt
+sys.path.append('Utils/')
+from PlotUtils import setMplParam, getColour, getHistoParam 
+setMplParam()
 # ===========================================================
 def parse_args():
     parser = argparse.ArgumentParser(description="Train Transformer on Meteostat data")
@@ -92,7 +96,7 @@ def parse_args():
     parser.add_argument("--starter_num_layers", type=int, default=6)
     parser.add_argument("--closer_num_layers", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.3)
-    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--val_ratio", type=float, default=0.2)
     parser.add_argument("--test_ratio", type=float, default=0.1)
     parser.add_argument(
@@ -274,7 +278,7 @@ def write_benchmark_summary(start_time, end_time, trainer, config, log_file_path
         f.write(summary_text)
 
 # ===========================================================
-def build_contexts(config, log_dir, closer_type):
+def build_contexts(config, log_dir, closer_type, first_year, last_year):
     pre_ctx = PreprocessingContext()
     fc_ctx = ForecastContext(
         window=config["window_size"],
@@ -305,9 +309,9 @@ def build_contexts(config, log_dir, closer_type):
         beta1=0.9,
         beta2=0.999,
         eps=1e-8,
-        div_factor=25.0,
+        div_factor=10,
         final_div_factor=1e2,
-        pct_start=0.1,
+        pct_start=0.15,
         anneal_strategy="cos",
         three_phase=False
     )
@@ -321,6 +325,8 @@ def build_contexts(config, log_dir, closer_type):
             "training"     : vars(training_ctx),
             "closer_type"  : closer_type.string,
             "target_features": closer_type.get_raw_target_features(),
+            "first_year": first_year,
+            "last_year": last_year
         }, f, indent=2)
 
     return fc_ctx, model_ctx, exp_ctx, training_ctx
@@ -377,7 +383,10 @@ def run():
     closer_type = CloserType.from_string(config["closer_type"])
     
     # context objects
-    fc_ctx, model_ctx, exp_ctx, training_ctx = build_contexts(config, log_dir, closer_type)
+    fc_ctx, model_ctx, exp_ctx, training_ctx = build_contexts(config, 
+                                                              log_dir, 
+                                                              closer_type,
+                                                              first_year, last_year)
 
     logging.info("📦 Building DataModule...")
     
@@ -412,10 +421,10 @@ def run():
     checkpoint_callback = ModelCheckpoint(
         dirpath=checkpoint_dir,
         filename="{epoch:02d}-{val_loss:.4f}",
-        save_top_k=1,
+        save_top_k=2,
         monitor="val_loss",
         mode="min", 
-        save_last=True,
+        save_last=False,
     )
     patience = 10_000_000 if is_lock_and_loaded else 10
     early_stopping = EarlyStopping(monitor="val_loss", 

@@ -168,15 +168,16 @@ def build_model_signature(exp_ctx: ExperimentContext) -> str:
     fc = exp_ctx.forecast
 
     signature = (
-        f"b{mc.d_ff}_"
         f"d{mc.d_model}_"
         f"h{mc.n_heads}_"
-        f"ls{mc.starter_num_layers}_"
-        f"cs{mc.closer_num_layers}_"
+        f"ff{mc.d_ff}_"
+        f"st{mc.starter_num_layers}_"
+        f"cl{mc.closer_num_layers}_"
         f"win{fc.window}_"
         f"ho{fc.horizon}_"
-        f"dr{mc.dropout}_"
-        f"lr"
+        f"dr{mc.dropout}"
+        "_"
+        # f"lr"
     )
     return signature
 
@@ -231,6 +232,7 @@ def run():
     is_lock_and_loaded = lock_and_load(config)
     date_time_dir = os.path.join(config["log_dir"], config["date"], config["time"])
     os.makedirs(date_time_dir, exist_ok=True)
+    
     prediction_dir = os.path.join("prediction", config["date"], config["time"])
     os.makedirs(prediction_dir, exist_ok=True)
     
@@ -294,7 +296,8 @@ def run():
                 model_ctx=exp_ctx.model,
                 forecast_ctx=exp_ctx.forecast,
                 input_features=trained_feature_list,
-                closer_type=closer_type
+                closer_type=closer_type,
+                training_ctx=None
             )
             
             # model = MeteoInformerHourglassTransformer.load_from_checkpoint(
@@ -302,7 +305,8 @@ def run():
             #     model_ctx=exp_ctx.model,
             #     forecast_ctx=exp_ctx.forecast,
             #     input_features=trained_feature_list,
-            #     closer_type=closer_type
+            #     closer_type=closer_type,
+            #     training_ctx=None
             # )
 
             model.eval()

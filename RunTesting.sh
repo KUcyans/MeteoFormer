@@ -1,6 +1,6 @@
 #!/bin/bash
 # =======================================================
-# start_testing_job.sh
+# RunTesting.sh
 # Evaluate all checkpoints of a given training run
 # =======================================================
 
@@ -14,18 +14,16 @@ conda activate tempestransformer
 # -------------------------
 
 # Kill previous testing processes
-echo "🧹 Cleaning up old Test processes..."
+echo "🧹 Cleaning up old Test.py processes..."
 pkill -f "python3 Test.py" || true
 sleep 1
 
-
 # -------------------------------
-# MANUAL SELECTION OF RUN
+# MANUAL SELECTION OF TRAINING RUN
 # -------------------------------
-DATE=20260519
-TIME=135256
+DATE=20260521   # training run date: YYYYMMDD
+TIME=212355     # training run time: HHMMSS
 # -------------------------------
-
 
 # Timestamp for THIS test run
 RUN_DATE=$(date +%Y%m%d)
@@ -45,3 +43,5 @@ nohup python3 Test.py \
   > "$TEST_STDOUT" 2>&1 &
 
 echo "🚀 Testing started (PID: $!)"
+echo "📝 Test stdout log: $TEST_STDOUT"
+echo "📊 Test results will be saved under: test_results/${DATE}/${TIME}/"
