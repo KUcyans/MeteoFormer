@@ -21,8 +21,8 @@ sleep 1
 # -------------------------------
 # MANUAL SELECTION OF TRAINING RUN
 # -------------------------------
-DATE=20260521   # training run date: YYYYMMDD
-TIME=212355     # training run time: HHMMSS
+DATE=20260522   # training run date: YYYYMMDD
+TIME=162154     # training run time: HHMMSS
 # -------------------------------
 
 # Timestamp for THIS test run
@@ -43,5 +43,5 @@ nohup python3 Test.py \
   > "$TEST_STDOUT" 2>&1 &
 
 echo "🚀 Testing started (PID: $!)"
-echo "📝 Test stdout log: $TEST_STDOUT"
-echo "📊 Test results will be saved under: test_results/${DATE}/${TIME}/"
+echo "${DATE}"
+echo "${TIME}"

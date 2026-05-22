@@ -39,7 +39,6 @@ TIME=${STAMP:9}
 mkdir -p logs/${DATE}/${TIME}
 PYTHON_STDOUT="logs/${DATE}/${TIME}/${DATE}_${TIME}_stdout.log"
 
-
 nohup python3 Train.py \
   --gpu 0 \
   --date $DATE \
@@ -49,3 +48,5 @@ nohup python3 Train.py \
 
 
 echo "🚀 Training started (PID: $!)"
+echo "${DATE}"
+echo "${TIME}"

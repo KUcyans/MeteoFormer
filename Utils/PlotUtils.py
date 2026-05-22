@@ -23,6 +23,24 @@ def getColour(i):
     return COLOUR[i]
 
 
+HATCH = [
+    "..",
+    "//",
+    "\\\\",
+    "",
+    # "oo",
+    "",
+    "",
+    "**",
+    # "..",
+    # "++",
+    # "--",
+    # "||",
+]
+
+def getHatch(i):
+    return HATCH[i % len(HATCH)]
+
 def setMplParam(classNum=10, isVaryLineStyle=True):
     """
     Configure global Matplotlib parameters for consistent and visually clear plots.
@@ -154,57 +172,99 @@ def getHistoParam(data, Nbins=None, binwidth=None, isDensity=False, isLog=False)
 
     return Nbins, binwidth, bins, counts, bin_centers
 
-def enable_histogram_counts():
+def enable_histogram_counts(
+    fontsize: int = 12,
+    rotation: int = 0,
+    min_count: float = 1,
+    every: int = 1,
+    y_offset_frac: float = 0.015,
+):
     """
-    Enable automatic annotation of histogram bar counts in Matplotlib.
+    Enable automatic annotation of histogram counts in Matplotlib.
 
-    Once called, all subsequent `plt.hist()` or `ax.hist()` calls will display
-    the count value above each bar. The patch is applied globally and only once.
+    Works for both bar-style and step-style histograms by using the
+    returned histogram counts and bin edges, rather than relying on
+    rectangle patches.
 
-    Usage example:
-        >>> from PlotUtils import enable_histogram_counts
-        >>> enable_histogram_counts()
-        >>> plt.hist(data)
-
-    Notes:
-    - Patches Matplotlib's Axes.hist method by injecting count labelling.
-    - Skips reapplying the patch if already active.
+    Parameters
+    ----------
+    fontsize:
+        Annotation font size.
+    rotation:
+        Text rotation angle.
+    min_count:
+        Only annotate bins with count >= min_count.
+    every:
+        Annotate every Nth non-empty bin, useful to reduce clutter.
+    y_offset_frac:
+        Vertical offset as a fraction of current y-axis maximum.
     """
     if getattr(Axes, "_hist_counts_annotated", False):
-        return  # already patched
+        return
 
     _orig_hist = Axes.hist
 
     def _hist_with_counts(self, *args, **kwargs):
+        # Optional per-call controls
+        annotate = kwargs.pop("annotate_counts", True)
+        local_fontsize = kwargs.pop("count_fontsize", fontsize)
+        local_rotation = kwargs.pop("count_rotation", rotation)
+        local_min_count = kwargs.pop("count_min", min_count)
+        local_every = kwargs.pop("count_every", every)
+
         out = _orig_hist(self, *args, **kwargs)
+
+        if not annotate:
+            return out
+
         try:
             n, bins, patches = out
         except Exception:
-            return out  # e.g., if hist returns something else
+            return out
 
-        def _fmt(h):
-            if not np.isfinite(h):
-                return ""
-            if np.isclose(h, round(h)):
-                return f"{int(round(h))}"
-            return f"{h:.1f}"
+        bin_centers = 0.5 * (bins[:-1] + bins[1:])
 
-        def _annotate_group(patches_group):
-            for rect in patches_group:
-                h = rect.get_height()
-                if h <= 0 or not np.isfinite(h):
+        # n can be:
+        # - shape (Nbins,) for one dataset
+        # - shape (Ndatasets, Nbins) for multiple datasets
+        n_arr = np.asarray(n, dtype=float)
+
+        if n_arr.ndim == 1:
+            count_groups = [n_arr]
+        else:
+            count_groups = list(n_arr)
+
+        ymax = self.get_ylim()[1]
+        y_offset = ymax * y_offset_frac
+
+        for group_idx, counts in enumerate(count_groups):
+            nonzero_counter = 0
+
+            for x, count in zip(bin_centers, counts):
+                if count < local_min_count or not np.isfinite(count):
                     continue
-                x = rect.get_x() + rect.get_width() / 2.0
-                self.text(x, h, _fmt(h),
-                          ha="center", va="bottom",
-                          fontsize=12, rotation=0, clip_on=True)
 
-        if hasattr(patches, "__iter__") and patches:
-            if hasattr(patches[0], "__iter__"):  # multiple datasets
-                for grp in patches:
-                    _annotate_group(grp)
-            else:
-                _annotate_group(patches)
+                if nonzero_counter % local_every != 0:
+                    nonzero_counter += 1
+                    continue
+
+                if np.isclose(count, round(count)):
+                    label = f"{int(round(count))}"
+                else:
+                    label = f"{count:.1f}"
+
+                self.text(
+                    x,
+                    count + y_offset,
+                    label,
+                    ha="center",
+                    va="bottom",
+                    fontsize=local_fontsize,
+                    rotation=local_rotation,
+                    clip_on=True,
+                )
+
+                nonzero_counter += 1
 
         return out
 

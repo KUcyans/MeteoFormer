@@ -73,9 +73,9 @@ from DataPipelineWorkShop import (get_hourly_example,
                                   PreprocessingContext, 
                                   ForecastContext, 
                                   ModelContext, 
-                                  TrainingContext, 
                                   ExperimentContext, 
-                                  make_dataloaders)
+                                  make_dataloaders, 
+                                  MeteoPreprocessor)
 from VanillaTransformer import MeteoVanillaTransformerEncoder, CloserType
 from Informer import MeteoInformerHourglassTransformer
 # ===========================================================
@@ -222,16 +222,24 @@ def compute_metrics_from_residuals(residual_df: pd.DataFrame):
 
     return metrics
 # ===========================================================
-def evaluate_checkpoint(model,   # LightningModule
-                        test_dl, # torch.utils.data.DataLoader
-                        exp_ctx: ExperimentContext, 
-                        checkpoint_name: str, 
-                        device) -> tuple[dict[str, float | int | str], pd.DataFrame]:
+def evaluate_checkpoint(
+    model,   # LightningModule
+    test_dl, # torch.utils.data.DataLoader
+    exp_ctx: ExperimentContext,
+    checkpoint_name: str,
+    device,
+) -> tuple[dict[str, float | int | str], pd.DataFrame]:
+
     model.to(device)
     model.eval()
 
     horizon = exp_ctx.forecast.horizon
     target_features = model.get_target_features()
+
+    preprocessor = MeteoPreprocessor(
+        use_cyclic=exp_ctx.preprocessing.use_cyclic,
+        categorical_mode=exp_ctx.preprocessing.categorical_mode,
+    )
 
     residual_rows = []
 
@@ -244,31 +252,51 @@ def evaluate_checkpoint(model,   # LightningModule
             x_mask = x_mask.to(device)
             y_mask = y_mask.to(device)
 
+            # Prediction in model-normalised space
             y_pred = model(x, mask=x_mask.any(-1))
 
             idx = model.closer.target_indices
 
-            # final horizon only
-            y_pred_f = y_pred[:, -horizon:, :]          # (B, H, D_target)
-            y_true_f = y_true[:, -horizon:, idx]        # (B, H, D_target)
-            y_mask_f = y_mask[:, -horizon:, idx]        # (B, H, D_target)
+            # Horizon slice in model-normalised space
+            y_pred_f = y_pred[:, -horizon:, :]       # (B, H, D_target)
+            y_true_f = y_true[:, -horizon:, idx]     # (B, H, D_target)
+            y_mask_f = y_mask[:, -horizon:, idx]     # (B, H, D_target)
 
-            residual = y_pred_f - y_true_f
+            B, H, D = y_pred_f.shape
 
-            B, H, D = residual.shape
+            # Inverse-transform BOTH prediction and truth
+            df_pred_inv = inverse_target_tensor_to_df(
+                y_pred_f,
+                target_features,
+                preprocessor,
+            )
+
+            df_true_inv = inverse_target_tensor_to_df(
+                y_true_f,
+                target_features,
+                preprocessor,
+            )
+
+            physical_features = list(df_pred_inv.columns)
 
             for b in range(B):
                 window_id = batch_idx * test_dl.batch_size + b
 
                 for h in range(H):
                     lead_time = h + 1
+                    flat_idx = b * H + h
 
-                    for d, feature in enumerate(target_features):
-                        if not bool(y_mask_f[b, h, d]):
-                            continue
+                    for feature in physical_features:
+                        # For temp/pressure/humidity/etc., feature exists directly.
+                        if feature in target_features:
+                            d = target_features.index(feature)
+                            if not bool(y_mask_f[b, h, d]):
+                                continue
 
-                        true_val = float(y_true_f[b, h, d].detach().cpu())
-                        pred_val = float(y_pred_f[b, h, d].detach().cpu())
+                        true_val = float(df_true_inv.loc[flat_idx, feature])
+                        pred_val = float(df_pred_inv.loc[flat_idx, feature])
+
+                        # Residual is now in physical units
                         res_val = pred_val - true_val
 
                         residual_rows.append({
@@ -289,6 +317,23 @@ def evaluate_checkpoint(model,   # LightningModule
     metrics["checkpoint"] = checkpoint_name
 
     return metrics, residual_df
+# ===========================================================
+def inverse_target_tensor_to_df(
+    tensor: torch.Tensor,
+    target_features: list[str],
+    preprocessor: MeteoPreprocessor,
+) -> pd.DataFrame:
+    """
+    Convert tensor with shape (B, H, D) from model-normalised space
+    back to physical/original units.
+    """
+    tensor = tensor.detach().cpu().float()
+    flat = tensor.reshape(-1, tensor.shape[-1]).numpy()
+
+    df = pd.DataFrame(flat, columns=target_features)
+    df_inv = preprocessor.inverse_transform(df)
+
+    return df_inv
 # ===========================================================
 def save_checkpoint_metrics(all_metrics, out_dir):
     os.makedirs(out_dir, exist_ok=True)
@@ -316,15 +361,20 @@ def save_residual_tables_by_checkpoint(all_residual_dfs, out_dir):
         checkpoint_name = residual_df["checkpoint"].iloc[0]
         safe_name = checkpoint_name.replace("/", "_").replace("\\", "_")
 
-        out_path = os.path.join(
-            out_dir,
-            f"{safe_name}_test_residuals.csv"
-        )
-
-        # checkpoint column is now redundant because the filename contains it
+        # checkpoint column is redundant because the filename contains it
         residual_df = residual_df.drop(columns=["checkpoint"])
 
-        residual_df.to_csv(out_path, index=False)
+        out_path = os.path.join(
+            out_dir,
+            f"{safe_name}_test_residuals.parquet"
+        )
+
+        residual_df.to_parquet(
+            out_path,
+            index=False,
+            compression="snappy",
+        )
+
         out_paths.append(out_path)
 
         logging.info(f"✅ Residual table saved to: {out_path}")

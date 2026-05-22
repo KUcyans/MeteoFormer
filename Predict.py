@@ -67,7 +67,13 @@ from datetime import datetime
 import torch
 from pytorch_lightning import Trainer
 from meteostat import Point
-from DataPipelineWorkShop import get_hourly_example, PreprocessingContext, ForecastContext, ModelContext, ExperimentContext, make_predict_loader, make_single_window_dataframe, MeteoPreprocessor
+from DataPipelineWorkShop import (PreprocessingContext, 
+                                  ForecastContext, 
+                                  ModelContext, 
+                                  ExperimentContext, 
+                                  make_predict_loader, 
+                                  make_single_window_dataframe, 
+                                  MeteoPreprocessor)
 from VanillaTransformer import MeteoVanillaTransformerEncoder, CloserType
 from Informer import MeteoInformerHourglassTransformer
 # ===========================================================
@@ -240,7 +246,7 @@ def run():
     ckpts = get_checkpoints(config)
 
     # contex
-    exp_ctx, target_features, closer_type = get_contexts(config, date_time_dir)
+    exp_ctx, _, closer_type = get_contexts(config, date_time_dir)
 
     # fetch target future data
     kbh = Point(lat=55.6761, lon=12.5683)

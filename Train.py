@@ -109,16 +109,16 @@ def parse_args():
     parser.add_argument(
         "--input_position_type",
         type=str,
-        default="none",
+        # default="none",
         # default="absolute",
-        # default="sinusoidal",
+        default="sinusoidal",
         help="Input Positional Encoding type: none | absolute | sinusoidal"
     )
     parser.add_argument(
         "--attention_type",
         type=str,
-        default="basic",
-        # default="t5",
+        # default="basic",
+        default="t5",
         # default="alibi",
         help="Self-Attention Mechanism type: basic | t5 | alibi | rope"
     )

@@ -75,7 +75,7 @@ def add_text_to_ax(x_coord, y_coord, string, ax, fontsize=12, color='k'):
 # =============================================================================
 
 #from iminuit.util import make_func_code
-from iminuit import describe #, Minuit,
+# from iminuit import describe #, Minuit,
 
 def set_var_if_None(var, x):
     if var is not None:
