@@ -331,6 +331,108 @@ class T5AttentionCore(nn.Module):
 
         return torch.matmul(attn, v)
 
+# ============================================================
+# RoPE: The Rotary Position Embedding
+# ============================================================
+class RoPEAttentionCore(nn.Module):
+    """
+    Full attention with Rotary Position Embedding.
+
+    RoPE is applied to q and k before attention.
+    q, k, v: (B, H, S, Dh)
+    """
+
+    def __init__(
+        self,
+        head_dim: int,
+        dropout: float = 0.1,
+        base: float = 10000.0,
+    ):
+        super().__init__()
+        if head_dim % 2 != 0:
+            raise ValueError(
+                f"RoPE requires even head_dim, but got head_dim={head_dim}"
+            )
+
+        self.head_dim = head_dim
+        self.dropout_p = dropout
+        self.base = base
+
+        inv_freq = 1.0 / (
+            base ** (torch.arange(0, head_dim, 2).float() / head_dim)
+        )
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+
+    def _get_sin_cos(
+        self,
+        seq_len: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ):
+        positions = torch.arange(seq_len, device=device, dtype=self.inv_freq.dtype)
+
+        # (S, Dh/2)
+        freqs = torch.einsum("s,d->sd", positions, self.inv_freq.to(device))
+
+        sin = freqs.sin().to(dtype=dtype)
+        cos = freqs.cos().to(dtype=dtype)
+
+        # (1, 1, S, Dh/2), broadcast over B and H
+        sin = sin.unsqueeze(0).unsqueeze(0)
+        cos = cos.unsqueeze(0).unsqueeze(0)
+
+        return sin, cos
+
+    @staticmethod
+    def _apply_rope(x: torch.Tensor, sin: torch.Tensor, cos: torch.Tensor):
+        """
+        x:   (B, H, S, Dh)
+        sin: (1, 1, S, Dh/2)
+        cos: (1, 1, S, Dh/2)
+        """
+        x_even = x[..., 0::2]
+        x_odd  = x[..., 1::2]
+
+        x_rot_even = x_even * cos - x_odd * sin
+        x_rot_odd  = x_even * sin + x_odd * cos
+
+        x_rot = torch.empty_like(x)
+        x_rot[..., 0::2] = x_rot_even
+        x_rot[..., 1::2] = x_rot_odd
+
+        return x_rot
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        attn_mask: torch.Tensor = None,
+        causal: bool = False,
+    ) -> torch.Tensor:
+        _, _, q_len, _ = q.shape
+        _, _, k_len, _ = k.shape
+
+        if q_len != k_len:
+            raise NotImplementedError(
+                "This RoPE core currently assumes q_len == k_len for self-attention."
+            )
+
+        sin, cos = self._get_sin_cos(
+            seq_len=q_len,
+            device=q.device,
+            dtype=q.dtype,
+        )
+
+        q = self._apply_rope(q, sin, cos)
+        k = self._apply_rope(k, sin, cos)
+
+        return F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=attn_mask,
+            dropout_p=self.dropout_p if self.training else 0.0,
+            is_causal=False,
+        )
 
 # ============================================================
 # Builder
@@ -360,8 +462,9 @@ def build_attention_core(
         )
 
     if attention_type == AttentionType.ROPE:
-        raise NotImplementedError(
-            "RoPE is not implemented yet because it modifies q/k before logits."
+        return RoPEAttentionCore(
+            head_dim=head_dim,
+            dropout=dropout,
         )
 
     raise NotImplementedError(f"{attention_type.value} attention is not implemented yet")
