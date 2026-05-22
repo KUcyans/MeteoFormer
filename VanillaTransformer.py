@@ -1,3 +1,6 @@
+"""
+VanillaTransformer.py
+"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -10,110 +13,12 @@ from DataPipelineWorkShop import (ForecastContext,
                                   inverse_predictions_to_df,
                                   build_optimizer_and_scheduler)
 from InputPositionType import build_position_module
-from AttentionCore import build_attention_core
+from AttentionCore import MultiHeadSelfAttention
 from typing import List
 import logging
 import abc
 from enum import Enum
 # 30 sec
-
-# -------------- Attention Mechanishm -------------------
-class MultiHeadAttention(nn.Module):
-    def __init__(
-        self,
-        d_model: int,
-        n_heads: int,
-        dropout: float = 0.1,
-        attention_type: str = "basic",
-    ):
-        super().__init__()
-        assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
-
-        self.d_model = d_model
-        self.n_heads = n_heads
-        self.head_dim = d_model // n_heads
-
-        self.q_proj = nn.Linear(d_model, d_model)
-        self.k_proj = nn.Linear(d_model, d_model)
-        self.v_proj = nn.Linear(d_model, d_model)
-
-        self.core = build_attention_core(
-            attention_type=attention_type,
-            n_heads=n_heads,
-            head_dim=self.head_dim,
-            dropout=dropout,
-        )
-
-        self.out_proj = nn.Linear(d_model, d_model)
-        self.dropout = nn.Dropout(dropout)
-        
-    # ==============================================================
-    def _make_attention_mask(self, x_mask: torch.Tensor, causal: bool) -> torch.Tensor:
-        """
-        x_mask: (B, S) where True = valid
-        Returns:
-            attn_mask: (B, H, S, S) boolean, True = ALLOW, False = BLOCK
-        """
-        B, S = x_mask.shape
-        H = self.n_heads
-
-        # Step 1: timestep validity mask -> (B,1,S)
-        base = x_mask.unsqueeze(1)  # (B,1,S)
-
-        # Expand to attention layout (keys dimension)
-        base = base.unsqueeze(2).expand(B, 1, S, S)   # (B,1,S,S)
-        base = base.expand(B, H, S, S)                # (B,H,S,S)
-
-        if causal:
-            causal_mask = torch.tril(
-                torch.ones(S, S, dtype=torch.bool, device=x_mask.device)
-            ).unsqueeze(0).unsqueeze(0)               # (1,1,S,S)
-
-            causal_mask = causal_mask.expand(B, H, S, S)
-
-            attn_mask = base & causal_mask            # True = allow
-        else:
-            attn_mask = base
-
-        return attn_mask
-
-
-    # ==============================================================
-    def forward(self, x: torch.Tensor, mask: torch.Tensor = None, causal: bool = False) -> torch.Tensor:
-        """
-        Args:
-            x: (B, S, D)
-            mask: optional per-timestep validity mask (B, S) where True = valid
-            causal: bool, apply causal (lookahead) masking if True
-
-        Returns:
-            Tensor of shape (B, S, D)
-        """
-        B, S, D = x.shape
-        H = self.n_heads
-        Dh = self.head_dim
-
-        q = self.q_proj(x).view(B, S, H, Dh).transpose(1, 2)
-        k = self.k_proj(x).view(B, S, H, Dh).transpose(1, 2)
-        v = self.v_proj(x).view(B, S, H, Dh).transpose(1, 2)
-
-        attn_mask = None
-        if mask is not None:
-            # (B,S) --> (B,H,S,S)
-            attn_mask = self._make_attention_mask(mask, causal)
-            # True: accounted in attention
-            # False: excluded from attention
-
-        attn_output = self.core(
-            q, k, v,
-            attn_mask=attn_mask,
-            causal=causal,
-        )
-
-        attn_output = attn_output.transpose(1, 2).reshape(B, S, D)
-        attn_output = self.out_proj(attn_output)
-        return self.dropout(attn_output)
-
 
 class FFN(nn.Module):
     """
@@ -164,7 +69,7 @@ class FFN(nn.Module):
 class EncoderBlock(nn.Module):
     """
     Single Transformer encoder block:
-    LayerNorm → MultiHeadAttention (+ residual)
+    LayerNorm → MultiHeadSelfAttention (+ residual)
     LayerNorm → Feed-Forward Network (+ residual)
 
     Supports both NaN masking and causal masking.
@@ -187,7 +92,7 @@ class EncoderBlock(nn.Module):
         super().__init__()
 
         self.norm1 = nn.LayerNorm(d_model)
-        self.attn = MultiHeadAttention(d_model, n_heads, dropout=dropout, attention_type=attention_type)
+        self.attn = MultiHeadSelfAttention(d_model, n_heads, dropout=dropout, attention_type=attention_type)
         self.dropout1 = nn.Dropout(dropout)
 
         self.norm2 = nn.LayerNorm(d_model)

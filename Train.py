@@ -106,6 +106,16 @@ def parse_args():
         default="thermo",
         help="Task type: thermo | thermodynamic | wind | precipitation"
     )
+    '''
+    Only For Informers!
+    1. none        + basic
+    2. sinusoidal  + basic
+    3. none        + t5
+    4. none        + alibi
+    5. none        + rope
+    6. none        + probsparse (Informer)
+    7. sinusoidal  + probsparse (Informer)
+    '''
     parser.add_argument(
         "--input_position_type",
         type=str,
@@ -121,7 +131,8 @@ def parse_args():
         # default="t5",
         # default="alibi",
         # default="rope",
-        help="Self-Attention Mechanism type: basic | t5 | alibi | rope"
+        # default="probsparse",
+        help="Self-Attention Mechanism type: basic | t5 | alibi | rope | probsparse"
     )
     parser.add_argument("--log_dir", type=str, default="./logs")
     parser.add_argument("--date", type=str, required=True, help="Execution date in YYYYMMDD format")
@@ -400,21 +411,21 @@ def run():
     logging.info(f"Available features: {available_feature_list}")
 
     logging.info("⚙️ Building model...")
-    model = MeteoVanillaTransformerEncoder(
-        model_ctx=model_ctx,
-        forecast_ctx=fc_ctx,
-        input_features=available_feature_list,
-        closer_type=closer_type,
-        training_ctx=training_ctx
-    )
-    
-    # model = MeteoInformerHourglassTransformer(
+    # model = MeteoVanillaTransformerEncoder(
     #     model_ctx=model_ctx,
     #     forecast_ctx=fc_ctx,
     #     input_features=available_feature_list,
     #     closer_type=closer_type,
     #     training_ctx=training_ctx
     # )
+    
+    model = MeteoInformerHourglassTransformer(
+        model_ctx=model_ctx,
+        forecast_ctx=fc_ctx,
+        input_features=available_feature_list,
+        closer_type=closer_type,
+        training_ctx=training_ctx
+    )
 
     checkpoint_dir = os.path.join(log_dir, "checkpoints")
     os.makedirs(checkpoint_dir, exist_ok=True)

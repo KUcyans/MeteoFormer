@@ -1,3 +1,6 @@
+"""
+Informer.py
+"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -10,7 +13,7 @@ from DataPipelineWorkShop import (ForecastContext,
                                   inverse_predictions_to_df,
                                   build_optimizer_and_scheduler)
 from InputPositionType import build_position_module
-from AttentionCore import build_attention_core
+from AttentionCore import MultiHeadSelfAttention
 from typing import List
 import logging
 import abc
@@ -36,167 +39,167 @@ from VanillaTransformer import MeteoTaskCloser, CloserType
 # ProbSparseAttentionCore
 # =============================================================================
 
-class ProbSparseAttentionCore(nn.Module):
-    """
-    Core ProbSparse attention (Informer-style) operating on already-projected Q, K, V.
+# class ProbSparseAttentionCore(nn.Module):
+#     """
+#     Core ProbSparse attention (Informer-style) operating on already-projected Q, K, V.
 
-    Inputs:
-        q, k, v: (B, H, S, Dh)
-        key_valid:  (B, S) bool, True = valid key timestep
-        query_valid:(B, S) bool, True = valid query timestep
-        causal: bool
+#     Inputs:
+#         q, k, v: (B, H, S, Dh)
+#         key_valid:  (B, S) bool, True = valid key timestep
+#         query_valid:(B, S) bool, True = valid query timestep
+#         causal: bool
 
-    Output:
-        out: (B, H, S, Dh)
-    """
+#     Output:
+#         out: (B, H, S, Dh)
+#     """
 
-    def __init__(self, factor: int = 5, dropout: float = 0.1):
-        super().__init__()
-        self.factor = factor
-        self.dropout = nn.Dropout(dropout)
+#     def __init__(self, factor: int = 5, dropout: float = 0.1):
+#         super().__init__()
+#         self.factor = factor
+#         self.dropout = nn.Dropout(dropout)
 
-    @staticmethod
-    def _mask_invalid_keys(scores: torch.Tensor, key_valid: Optional[torch.Tensor]) -> torch.Tensor:
-        # scores: (B,H,Q,K)
-        if key_valid is None:
-            return scores
-        km = key_valid.unsqueeze(1).unsqueeze(1)  # (B,1,1,K)
-        return scores.masked_fill(~km, float("-inf"))
+#     @staticmethod
+#     def _mask_invalid_keys(scores: torch.Tensor, key_valid: Optional[torch.Tensor]) -> torch.Tensor:
+#         # scores: (B,H,Q,K)
+#         if key_valid is None:
+#             return scores
+#         km = key_valid.unsqueeze(1).unsqueeze(1)  # (B,1,1,K)
+#         return scores.masked_fill(~km, float("-inf"))
 
-    @staticmethod
-    def _mask_future_keys_for_selected(scores_top: torch.Tensor, top_idx: torch.Tensor) -> torch.Tensor:
-        """
-        scores_top: (B,H,u,S)
-        top_idx:    (B,H,u) query positions (absolute indices)
-        """
-        B, H, u, S = scores_top.shape
-        qpos = top_idx.unsqueeze(-1)  # (B,H,u,1)
-        kpos = torch.arange(S, device=scores_top.device).view(1, 1, 1, S)
-        future = kpos > qpos
-        return scores_top.masked_fill(future, float("-inf"))
+#     @staticmethod
+#     def _mask_future_keys_for_selected(scores_top: torch.Tensor, top_idx: torch.Tensor) -> torch.Tensor:
+#         """
+#         scores_top: (B,H,u,S)
+#         top_idx:    (B,H,u) query positions (absolute indices)
+#         """
+#         B, H, u, S = scores_top.shape
+#         qpos = top_idx.unsqueeze(-1)  # (B,H,u,1)
+#         kpos = torch.arange(S, device=scores_top.device).view(1, 1, 1, S)
+#         future = kpos > qpos
+#         return scores_top.masked_fill(future, float("-inf"))
 
-    def forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        key_valid: Optional[torch.Tensor] = None,
-        query_valid: Optional[torch.Tensor] = None,
-        causal: bool = False,
-    ) -> torch.Tensor:
-        B, H, S, Dh = q.shape
-        scale = Dh ** -0.5
+#     def forward(
+#         self,
+#         q: torch.Tensor,
+#         k: torch.Tensor,
+#         v: torch.Tensor,
+#         key_valid: Optional[torch.Tensor] = None,
+#         query_valid: Optional[torch.Tensor] = None,
+#         causal: bool = False,
+#     ) -> torch.Tensor:
+#         B, H, S, Dh = q.shape
+#         scale = Dh ** -0.5
 
-        # u ~ factor * ln(S)
-        u = min(S, max(1, int(self.factor * math.log(S + 1))))
-        k_sample = min(S, max(1, int(self.factor * math.log(S + 1))))
+#         # u ~ factor * ln(S)
+#         u = min(S, max(1, int(self.factor * math.log(S + 1))))
+#         k_sample = min(S, max(1, int(self.factor * math.log(S + 1))))
 
-        # sample some keys for cheap importance estimation
-        sample_idx = torch.randint(0, S, (k_sample,), device=q.device)
-        k_sampled = k[:, :, sample_idx, :]  # (B,H,k',Dh)
+#         # sample some keys for cheap importance estimation
+#         sample_idx = torch.randint(0, S, (k_sample,), device=q.device)
+#         k_sampled = k[:, :, sample_idx, :]  # (B,H,k',Dh)
 
-        approx = torch.einsum("bhsd,bhkd->bhsk", q, k_sampled) * scale  # (B,H,S,k')
+#         approx = torch.einsum("bhsd,bhkd->bhsk", q, k_sampled) * scale  # (B,H,S,k')
 
-        # mask sampled keys
-        if key_valid is not None:
-            key_valid_sample = key_valid[:, sample_idx]  # (B,k')
-            approx = self._mask_invalid_keys(approx, key_valid_sample)
+#         # mask sampled keys
+#         if key_valid is not None:
+#             key_valid_sample = key_valid[:, sample_idx]  # (B,k')
+#             approx = self._mask_invalid_keys(approx, key_valid_sample)
 
-        approx_max = approx.max(dim=-1).values
-        approx_mean = approx.mean(dim=-1)
-        importance = approx_max - approx_mean  # (B,H,S)
+#         approx_max = approx.max(dim=-1).values
+#         approx_mean = approx.mean(dim=-1)
+#         importance = approx_max - approx_mean  # (B,H,S)
 
-        # prevent invalid queries from being selected
-        if query_valid is not None:
-            importance = importance.masked_fill(~query_valid.unsqueeze(1), float("-inf"))
+#         # prevent invalid queries from being selected
+#         if query_valid is not None:
+#             importance = importance.masked_fill(~query_valid.unsqueeze(1), float("-inf"))
 
-        top_idx = importance.topk(k=u, dim=-1).indices  # (B,H,u)
+#         top_idx = importance.topk(k=u, dim=-1).indices  # (B,H,u)
 
-        # exact attention only for top queries
-        q_top = torch.gather(
-            q, dim=2, index=top_idx.unsqueeze(-1).expand(B, H, u, Dh)
-        )  # (B,H,u,Dh)
+#         # exact attention only for top queries
+#         q_top = torch.gather(
+#             q, dim=2, index=top_idx.unsqueeze(-1).expand(B, H, u, Dh)
+#         )  # (B,H,u,Dh)
 
-        scores_top = torch.einsum("bhud,bhkd->bhuk", q_top, k) * scale  # (B,H,u,S)
-        scores_top = self._mask_invalid_keys(scores_top, key_valid)
+#         scores_top = torch.einsum("bhud,bhkd->bhuk", q_top, k) * scale  # (B,H,u,S)
+#         scores_top = self._mask_invalid_keys(scores_top, key_valid)
 
-        if causal:
-            scores_top = self._mask_future_keys_for_selected(scores_top, top_idx)
+#         if causal:
+#             scores_top = self._mask_future_keys_for_selected(scores_top, top_idx)
 
-        attn_top = torch.softmax(scores_top, dim=-1)
-        attn_top = self.dropout(attn_top)
+#         attn_top = torch.softmax(scores_top, dim=-1)
+#         attn_top = self.dropout(attn_top)
 
-        out_top = torch.einsum("bhuk,bhkd->bhud", attn_top, v)  # (B,H,u,Dh)
+#         out_top = torch.einsum("bhuk,bhkd->bhud", attn_top, v)  # (B,H,u,Dh)
 
-        # default context for non-selected queries
-        if not causal:
-            if key_valid is None:
-                context = v.mean(dim=2, keepdim=True)
-            else:
-                w = key_valid.unsqueeze(1).unsqueeze(-1).to(v.dtype)
-                denom = w.sum(dim=2, keepdim=True).clamp_min(1.0)
-                context = (v * w).sum(dim=2, keepdim=True) / denom
-            out = context.expand(B, H, S, Dh).contiguous()
-        else:
-            out = torch.zeros((B, H, S, Dh), device=v.device, dtype=v.dtype)
+#         # default context for non-selected queries
+#         if not causal:
+#             if key_valid is None:
+#                 context = v.mean(dim=2, keepdim=True)
+#             else:
+#                 w = key_valid.unsqueeze(1).unsqueeze(-1).to(v.dtype)
+#                 denom = w.sum(dim=2, keepdim=True).clamp_min(1.0)
+#                 context = (v * w).sum(dim=2, keepdim=True) / denom
+#             out = context.expand(B, H, S, Dh).contiguous()
+#         else:
+#             out = torch.zeros((B, H, S, Dh), device=v.device, dtype=v.dtype)
 
-        # scatter top outputs into out
-        index = top_idx.unsqueeze(-1).expand(B, H, u, Dh)
+#         # scatter top outputs into out
+#         index = top_idx.unsqueeze(-1).expand(B, H, u, Dh)
 
-        if out_top.dtype != out.dtype:
-            out_top = out_top.to(out.dtype)
+#         if out_top.dtype != out.dtype:
+#             out_top = out_top.to(out.dtype)
 
-        out.scatter_(dim=2, index=index, src=out_top)
+#         out.scatter_(dim=2, index=index, src=out_top)
 
-        # zero out invalid query positions (matches your vanilla semantics)
-        if query_valid is not None:
-            out = out * query_valid.unsqueeze(1).unsqueeze(-1).to(out.dtype)
+#         # zero out invalid query positions (matches your vanilla semantics)
+#         if query_valid is not None:
+#             out = out * query_valid.unsqueeze(1).unsqueeze(-1).to(out.dtype)
 
-        return out
+#         return out
 
 
 # =============================================================================
 # InformerMultiHeadSelfAttention (drop-in replacement for MultiHeadAttention)
 # =============================================================================
 
-class InformerMultiHeadSelfAttention(nn.Module):
-    """
-    Multi-head self-attention using ProbSparseAttentionCore.
-    Matches your vanilla signature: forward(x, mask=None, causal=False) -> (B,S,D)
-    """
+# class InformerMultiHeadSelfAttention(nn.Module):
+#     """
+#     Multi-head self-attention using ProbSparseAttentionCore.
+#     Matches your vanilla signature: forward(x, mask=None, causal=False) -> (B,S,D)
+#     """
 
-    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1, factor: int = 5):
-        super().__init__()
-        assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
+#     def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1, factor: int = 5):
+#         super().__init__()
+#         assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
 
-        self.d_model = d_model
-        self.n_heads = n_heads
-        self.head_dim = d_model // n_heads
+#         self.d_model = d_model
+#         self.n_heads = n_heads
+#         self.head_dim = d_model // n_heads
 
-        self.q_proj = nn.Linear(d_model, d_model)
-        self.k_proj = nn.Linear(d_model, d_model)
-        self.v_proj = nn.Linear(d_model, d_model)
+#         self.q_proj = nn.Linear(d_model, d_model)
+#         self.k_proj = nn.Linear(d_model, d_model)
+#         self.v_proj = nn.Linear(d_model, d_model)
 
-        self.core = ProbSparseAttentionCore(factor=factor, dropout=dropout)
-        self.out_proj = nn.Linear(d_model, d_model)
-        self.dropout = nn.Dropout(dropout)
+#         self.core = ProbSparseAttentionCore(factor=factor, dropout=dropout)
+#         self.out_proj = nn.Linear(d_model, d_model)
+#         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None, causal: bool = False) -> torch.Tensor:
-        B, S, D = x.shape
-        H = self.n_heads
-        Dh = self.head_dim
+#     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None, causal: bool = False) -> torch.Tensor:
+#         B, S, D = x.shape
+#         H = self.n_heads
+#         Dh = self.head_dim
 
-        q = self.q_proj(x).view(B, S, H, Dh).transpose(1, 2)  # (B,H,S,Dh)
-        k = self.k_proj(x).view(B, S, H, Dh).transpose(1, 2)
-        v = self.v_proj(x).view(B, S, H, Dh).transpose(1, 2)
+#         q = self.q_proj(x).view(B, S, H, Dh).transpose(1, 2)  # (B,H,S,Dh)
+#         k = self.k_proj(x).view(B, S, H, Dh).transpose(1, 2)
+#         v = self.v_proj(x).view(B, S, H, Dh).transpose(1, 2)
 
-        key_valid = mask  # (B,S) True=valid
-        query_valid = mask
+#         key_valid = mask  # (B,S) True=valid
+#         query_valid = mask
 
-        out = self.core(q, k, v, key_valid=key_valid, query_valid=query_valid, causal=causal)
-        out = out.transpose(1, 2).reshape(B, S, D)
-        out = self.out_proj(out)
-        return self.dropout(out)
+#         out = self.core(q, k, v, key_valid=key_valid, query_valid=query_valid, causal=causal)
+#         out = out.transpose(1, 2).reshape(B, S, D)
+#         out = self.out_proj(out)
+#         return self.dropout(out)
 
 
 # =============================================================================
@@ -235,16 +238,26 @@ class FFN(nn.Module):
 class InformerEncoderLayer(nn.Module):
     def __init__(
         self,
-        d_model: int,
-        n_heads: int,
-        d_ff: int,
-        dropout: float = 0.1,
-        activation: str = 'gelu',
+        model_ctx: ModelContext,
         factor: int = 5
     ):
         super().__init__()
+        d_model = model_ctx.d_model
+        n_heads = model_ctx.n_heads
+        d_ff = model_ctx.d_ff
+        activation = model_ctx.starter_activation
+        attention_type = model_ctx.attention_type
+        dropout = model_ctx.dropout
+        
         self.norm1 = nn.LayerNorm(d_model)
-        self.attn = InformerMultiHeadSelfAttention(d_model, n_heads, dropout=dropout, factor=factor)
+        
+        self.attn = MultiHeadSelfAttention(
+            d_model=d_model,
+            n_heads=n_heads,
+            dropout=dropout,
+            attention_type=attention_type,
+            factor=factor,
+        )
         self.drop1 = nn.Dropout(dropout)
 
         self.norm2 = nn.LayerNorm(d_model)
@@ -336,11 +349,7 @@ class StarterMeteoInformerHourglassEncoder(nn.Module):
         self.feature_dim = len(input_features)
 
         d_model = model_ctx.d_model
-        n_heads = model_ctx.n_heads
-        d_ff = model_ctx.d_ff
         num_layers = model_ctx.starter_num_layers
-        dropout = model_ctx.dropout
-        activation = model_ctx.starter_activation
         input_position_type = model_ctx.input_position_type
 
         self.causal = forecast_ctx.causal
@@ -349,10 +358,6 @@ class StarterMeteoInformerHourglassEncoder(nn.Module):
 
         self.input_proj = nn.Linear(self.feature_dim, d_model)
 
-        # # positional embedding defined on the input window grid (S_in)
-        # self.pos_embedding = nn.Parameter(torch.zeros(1, self.window, d_model))
-        # nn.init.trunc_normal_(self.pos_embedding, std=0.02)
-        
         # --- Positional encoding: absolute, sinusoidal, or no positional encoding ---
         self.position = build_position_module(
                 input_position_type=input_position_type,
@@ -362,11 +367,7 @@ class StarterMeteoInformerHourglassEncoder(nn.Module):
 
         self.layers = nn.ModuleList([
             InformerEncoderLayer(
-                d_model=d_model,
-                n_heads=n_heads,
-                d_ff=d_ff,
-                dropout=dropout,
-                activation=activation,
+                model_ctx=model_ctx,
                 factor=factor,
             )
             for _ in range(num_layers)
@@ -580,6 +581,13 @@ class MeteoInformerHourglassTransformer(LightningModule):
             trainer=self.trainer,
             training_ctx=self.training_ctx,
         )
+        
+    def _total_steps(self):
+        try:
+            return len(self.trainer.train_dataloader) * self.trainer.max_epochs
+        except Exception:
+            # fallback estimate (useful for debugging or unit tests)
+            return 1000
 
     def get_onecycle_config(self):
         return {
