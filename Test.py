@@ -484,20 +484,13 @@ def run():
     
     # 5. Loop over checkpoints
     for ckpt in ckpts:
+        torch.manual_seed(42)
+        torch.cuda.manual_seed_all(42)
         ckpt_name = os.path.basename(ckpt).replace("=", "-").replace(".ckpt", "")
         logging.info(f"🔍 Testing checkpoint: {ckpt_name}")
 
         input_features = get_input_features_from_checkpoint(ckpt)
-        model = MeteoVanillaTransformerEncoder.load_from_checkpoint(
-            checkpoint_path=ckpt,
-            model_ctx=exp_ctx.model,
-            forecast_ctx=exp_ctx.forecast,
-            input_features=input_features,
-            closer_type=closer_type,
-            training_ctx=None
-        )
-        
-        # model = MeteoInformerHourglassTransformer.load_from_checkpoint(
+        # model = MeteoVanillaTransformerEncoder.load_from_checkpoint(
         #     checkpoint_path=ckpt,
         #     model_ctx=exp_ctx.model,
         #     forecast_ctx=exp_ctx.forecast,
@@ -505,6 +498,15 @@ def run():
         #     closer_type=closer_type,
         #     training_ctx=None
         # )
+        
+        model = MeteoInformerHourglassTransformer.load_from_checkpoint(
+            checkpoint_path=ckpt,
+            model_ctx=exp_ctx.model,
+            forecast_ctx=exp_ctx.forecast,
+            input_features=input_features,
+            closer_type=closer_type,
+            training_ctx=None
+        )
 
         metrics, residual_df = evaluate_checkpoint(
             model=model,

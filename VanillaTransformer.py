@@ -75,24 +75,25 @@ class EncoderBlock(nn.Module):
     Supports both NaN masking and causal masking.
 
     Args:
-        d_model (int): Input/hidden feature dimension.
-        n_heads (int): Number of attention heads.
-        d_ff (int): Feed-forward expansion dimension.
-        dropout (float): Dropout probability.
-        activation (str): Activation for FFN ('gelu', 'relu', or 'silu').
+        model_ctx (ModelContext): the model context
     """
 
-    def __init__(self,
-                 d_model: int,
-                 n_heads: int,
-                 d_ff: int,
-                 dropout: float = 0.1,
-                 activation: str = 'gelu',
-                 attention_type:str = 'basic'):
+    def __init__(self, model_ctx: ModelContext):
         super().__init__()
+        d_model = model_ctx.d_model
+        n_heads = model_ctx.n_heads
+        d_ff = model_ctx.d_ff
+        dropout = model_ctx.dropout
+        activation = model_ctx.starter_activation
+        attention_type = model_ctx.attention_type
 
         self.norm1 = nn.LayerNorm(d_model)
-        self.attn = MultiHeadSelfAttention(d_model, n_heads, dropout=dropout, attention_type=attention_type)
+        self.attn = MultiHeadSelfAttention(
+            d_model=d_model,
+            n_heads=n_heads,
+            dropout=dropout,
+            attention_type=attention_type,
+            )
         self.dropout1 = nn.Dropout(dropout)
 
         self.norm2 = nn.LayerNorm(d_model)
@@ -150,13 +151,8 @@ class StarterMeteoVanillaTransformerEncoder(nn.Module):
 
         # short aliases (for convenience & readability inside code)
         d_model = model_ctx.d_model
-        n_heads = model_ctx.n_heads
-        d_ff = model_ctx.d_ff
         num_layers = model_ctx.starter_num_layers
-        dropout = model_ctx.dropout
-        activation = model_ctx.starter_activation
         input_position_type = model_ctx.input_position_type
-        attention_type = model_ctx.attention_type
 
         window = forecast_ctx.window
         self.causal = forecast_ctx.causal
@@ -176,14 +172,7 @@ class StarterMeteoVanillaTransformerEncoder(nn.Module):
 
         # --- Stack of encoder blocks ---
         self.layers = nn.ModuleList([
-            EncoderBlock(
-                d_model=d_model,
-                n_heads=n_heads,
-                d_ff=d_ff,
-                dropout=dropout,
-                activation=activation,
-                attention_type=attention_type
-            )
+            EncoderBlock(model_ctx=model_ctx)
             for _ in range(num_layers)
         ])
 
@@ -191,8 +180,7 @@ class StarterMeteoVanillaTransformerEncoder(nn.Module):
         self.final_norm = nn.LayerNorm(d_model)
 
     def forward(self, x, mask=None):
-        B, S, _ = x.shape
-
+        # B, S, _ = x.shape
         x = self.input_proj(x)
         x = self.position(x)
 
@@ -567,7 +555,6 @@ class MeteoVanillaTransformerEncoder(LightningModule):
             trainer=self.trainer,
             training_ctx=self.training_ctx,
         )
-
     def _total_steps(self):
         try:
             return len(self.trainer.train_dataloader) * self.trainer.max_epochs

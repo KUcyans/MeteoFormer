@@ -36,173 +36,6 @@ from pytorch_lightning import LightningModule
 from VanillaTransformer import MeteoTaskCloser, CloserType
 
 # =============================================================================
-# ProbSparseAttentionCore
-# =============================================================================
-
-# class ProbSparseAttentionCore(nn.Module):
-#     """
-#     Core ProbSparse attention (Informer-style) operating on already-projected Q, K, V.
-
-#     Inputs:
-#         q, k, v: (B, H, S, Dh)
-#         key_valid:  (B, S) bool, True = valid key timestep
-#         query_valid:(B, S) bool, True = valid query timestep
-#         causal: bool
-
-#     Output:
-#         out: (B, H, S, Dh)
-#     """
-
-#     def __init__(self, factor: int = 5, dropout: float = 0.1):
-#         super().__init__()
-#         self.factor = factor
-#         self.dropout = nn.Dropout(dropout)
-
-#     @staticmethod
-#     def _mask_invalid_keys(scores: torch.Tensor, key_valid: Optional[torch.Tensor]) -> torch.Tensor:
-#         # scores: (B,H,Q,K)
-#         if key_valid is None:
-#             return scores
-#         km = key_valid.unsqueeze(1).unsqueeze(1)  # (B,1,1,K)
-#         return scores.masked_fill(~km, float("-inf"))
-
-#     @staticmethod
-#     def _mask_future_keys_for_selected(scores_top: torch.Tensor, top_idx: torch.Tensor) -> torch.Tensor:
-#         """
-#         scores_top: (B,H,u,S)
-#         top_idx:    (B,H,u) query positions (absolute indices)
-#         """
-#         B, H, u, S = scores_top.shape
-#         qpos = top_idx.unsqueeze(-1)  # (B,H,u,1)
-#         kpos = torch.arange(S, device=scores_top.device).view(1, 1, 1, S)
-#         future = kpos > qpos
-#         return scores_top.masked_fill(future, float("-inf"))
-
-#     def forward(
-#         self,
-#         q: torch.Tensor,
-#         k: torch.Tensor,
-#         v: torch.Tensor,
-#         key_valid: Optional[torch.Tensor] = None,
-#         query_valid: Optional[torch.Tensor] = None,
-#         causal: bool = False,
-#     ) -> torch.Tensor:
-#         B, H, S, Dh = q.shape
-#         scale = Dh ** -0.5
-
-#         # u ~ factor * ln(S)
-#         u = min(S, max(1, int(self.factor * math.log(S + 1))))
-#         k_sample = min(S, max(1, int(self.factor * math.log(S + 1))))
-
-#         # sample some keys for cheap importance estimation
-#         sample_idx = torch.randint(0, S, (k_sample,), device=q.device)
-#         k_sampled = k[:, :, sample_idx, :]  # (B,H,k',Dh)
-
-#         approx = torch.einsum("bhsd,bhkd->bhsk", q, k_sampled) * scale  # (B,H,S,k')
-
-#         # mask sampled keys
-#         if key_valid is not None:
-#             key_valid_sample = key_valid[:, sample_idx]  # (B,k')
-#             approx = self._mask_invalid_keys(approx, key_valid_sample)
-
-#         approx_max = approx.max(dim=-1).values
-#         approx_mean = approx.mean(dim=-1)
-#         importance = approx_max - approx_mean  # (B,H,S)
-
-#         # prevent invalid queries from being selected
-#         if query_valid is not None:
-#             importance = importance.masked_fill(~query_valid.unsqueeze(1), float("-inf"))
-
-#         top_idx = importance.topk(k=u, dim=-1).indices  # (B,H,u)
-
-#         # exact attention only for top queries
-#         q_top = torch.gather(
-#             q, dim=2, index=top_idx.unsqueeze(-1).expand(B, H, u, Dh)
-#         )  # (B,H,u,Dh)
-
-#         scores_top = torch.einsum("bhud,bhkd->bhuk", q_top, k) * scale  # (B,H,u,S)
-#         scores_top = self._mask_invalid_keys(scores_top, key_valid)
-
-#         if causal:
-#             scores_top = self._mask_future_keys_for_selected(scores_top, top_idx)
-
-#         attn_top = torch.softmax(scores_top, dim=-1)
-#         attn_top = self.dropout(attn_top)
-
-#         out_top = torch.einsum("bhuk,bhkd->bhud", attn_top, v)  # (B,H,u,Dh)
-
-#         # default context for non-selected queries
-#         if not causal:
-#             if key_valid is None:
-#                 context = v.mean(dim=2, keepdim=True)
-#             else:
-#                 w = key_valid.unsqueeze(1).unsqueeze(-1).to(v.dtype)
-#                 denom = w.sum(dim=2, keepdim=True).clamp_min(1.0)
-#                 context = (v * w).sum(dim=2, keepdim=True) / denom
-#             out = context.expand(B, H, S, Dh).contiguous()
-#         else:
-#             out = torch.zeros((B, H, S, Dh), device=v.device, dtype=v.dtype)
-
-#         # scatter top outputs into out
-#         index = top_idx.unsqueeze(-1).expand(B, H, u, Dh)
-
-#         if out_top.dtype != out.dtype:
-#             out_top = out_top.to(out.dtype)
-
-#         out.scatter_(dim=2, index=index, src=out_top)
-
-#         # zero out invalid query positions (matches your vanilla semantics)
-#         if query_valid is not None:
-#             out = out * query_valid.unsqueeze(1).unsqueeze(-1).to(out.dtype)
-
-#         return out
-
-
-# =============================================================================
-# InformerMultiHeadSelfAttention (drop-in replacement for MultiHeadAttention)
-# =============================================================================
-
-# class InformerMultiHeadSelfAttention(nn.Module):
-#     """
-#     Multi-head self-attention using ProbSparseAttentionCore.
-#     Matches your vanilla signature: forward(x, mask=None, causal=False) -> (B,S,D)
-#     """
-
-#     def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1, factor: int = 5):
-#         super().__init__()
-#         assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
-
-#         self.d_model = d_model
-#         self.n_heads = n_heads
-#         self.head_dim = d_model // n_heads
-
-#         self.q_proj = nn.Linear(d_model, d_model)
-#         self.k_proj = nn.Linear(d_model, d_model)
-#         self.v_proj = nn.Linear(d_model, d_model)
-
-#         self.core = ProbSparseAttentionCore(factor=factor, dropout=dropout)
-#         self.out_proj = nn.Linear(d_model, d_model)
-#         self.dropout = nn.Dropout(dropout)
-
-#     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None, causal: bool = False) -> torch.Tensor:
-#         B, S, D = x.shape
-#         H = self.n_heads
-#         Dh = self.head_dim
-
-#         q = self.q_proj(x).view(B, S, H, Dh).transpose(1, 2)  # (B,H,S,Dh)
-#         k = self.k_proj(x).view(B, S, H, Dh).transpose(1, 2)
-#         v = self.v_proj(x).view(B, S, H, Dh).transpose(1, 2)
-
-#         key_valid = mask  # (B,S) True=valid
-#         query_valid = mask
-
-#         out = self.core(q, k, v, key_valid=key_valid, query_valid=query_valid, causal=causal)
-#         out = out.transpose(1, 2).reshape(B, S, D)
-#         out = self.out_proj(out)
-#         return self.dropout(out)
-
-
-# =============================================================================
 # FFN (reuse your existing one)
 # =============================================================================
 
@@ -239,7 +72,7 @@ class InformerEncoderLayer(nn.Module):
     def __init__(
         self,
         model_ctx: ModelContext,
-        factor: int = 5
+        factor: int
     ):
         super().__init__()
         d_model = model_ctx.d_model
@@ -340,8 +173,8 @@ class StarterMeteoInformerHourglassEncoder(nn.Module):
         model_ctx: ModelContext,
         forecast_ctx: ForecastContext,
         input_features: List[str],
-        distil: bool = True,
-        factor: int = 5,
+        distil: bool,
+        factor: int,
     ):
         super().__init__()
 
@@ -421,10 +254,10 @@ class ResamplingCloser(nn.Module):
         model_ctx: ModelContext,
         input_features: List[str],
         closer_type: CloserType,
-        preset_len: int,
+        prediction_len: int
     ):
         super().__init__()
-        self.preset_len = preset_len
+        self.prediction_len = prediction_len
         self.closer = closer_type.type(
             model_ctx=model_ctx,
             input_features=input_features,
@@ -437,10 +270,10 @@ class ResamplingCloser(nn.Module):
             H = H * H_mask.unsqueeze(-1).to(H.dtype)
 
         B, S, D = H.shape
-        if S != self.preset_len:
+        if S != self.prediction_len:
             H = F.interpolate(
                 H.transpose(1, 2),
-                size=self.preset_len,
+                size=self.prediction_len,
                 mode="nearest"
             ).transpose(1, 2)
 
@@ -458,7 +291,7 @@ class MeteoInformerHourglassTransformer(LightningModule):
     Hourglass Informer-style model that reuses your closer classes unchanged.
 
     Output shape matches vanilla closer output:
-        preds: (B, preset_len, out_dim)
+        preds: (B, prediction_len, out_dim)
     Loss uses the last horizon positions:
         preds[:, -horizon:, :] vs y[:, -horizon:, idx]
     """
@@ -470,9 +303,8 @@ class MeteoInformerHourglassTransformer(LightningModule):
         training_ctx: TrainingContext,
         input_features: List[str],
         closer_type: CloserType,
-        preset_len: Optional[int] = None,
-        distil: bool = True,
-        factor: int = 5,
+        factor: int, # related to ProbSparse Attention query selection
+        distil: bool,
     ):
         super().__init__()
         self.save_hyperparameters(ignore=["model_ctx", "forecast_ctx", "training_ctx"])
@@ -482,7 +314,7 @@ class MeteoInformerHourglassTransformer(LightningModule):
         self.training_ctx = training_ctx
         self.horizon = forecast_ctx.horizon
         self.input_features = input_features
-        self.preset_len = preset_len if preset_len is not None else forecast_ctx.window
+        self.prediction_len = forecast_ctx.horizon
 
         self.starter = StarterMeteoInformerHourglassEncoder(
             model_ctx=model_ctx,
@@ -496,7 +328,7 @@ class MeteoInformerHourglassTransformer(LightningModule):
             model_ctx=model_ctx,
             input_features=input_features,
             closer_type=closer_type,
-            preset_len=self.preset_len,
+            prediction_len=self.prediction_len,
         )
         
         # --- preprocessor ---
@@ -507,7 +339,7 @@ class MeteoInformerHourglassTransformer(LightningModule):
     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None):
         H, H_mask = self.starter(x, mask=mask)
         out = self.closer(H, H_mask=H_mask)
-        return out, H_mask
+        return out
 
     def _compute_loss(self, preds, targets, y_mask):
         idx = self.closer.target_indices
@@ -521,7 +353,7 @@ class MeteoInformerHourglassTransformer(LightningModule):
 
     def training_step(self, batch, batch_idx):
         x, y, x_mask, y_mask = batch
-        preds, _ = self.forward(x, mask=x_mask.any(-1))
+        preds = self.forward(x, mask=x_mask.any(-1))
         loss = self._compute_loss(preds, y, y_mask)
         self.log("train_loss", loss)
         
@@ -547,7 +379,7 @@ class MeteoInformerHourglassTransformer(LightningModule):
 
     def validation_step(self, batch, batch_idx):
         x, y, x_mask, y_mask = batch
-        preds, _ = self.forward(x, mask=x_mask.any(-1))
+        preds = self.forward(x, mask=x_mask.any(-1))
         loss = self._compute_loss(preds, y, y_mask)
         self.log("val_loss", loss, prog_bar=True)
         
@@ -572,7 +404,7 @@ class MeteoInformerHourglassTransformer(LightningModule):
 
     def predict_step(self, batch, batch_idx):
         x, y, x_mask, y_mask = batch
-        preds, _ = self.forward(x, mask=x_mask.any(-1))
+        preds = self.forward(x, mask=x_mask.any(-1))
         return preds[:, -self.horizon:, :]
 
     def configure_optimizers(self):

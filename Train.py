@@ -5,8 +5,8 @@ Train.py
 Train a vanilla Transformer encoder for meteorological sequence-to-sequence forecasting.
 """
 import warnings
-import pandas as pd
 import logging
+import pandas as pd
 
 logging.basicConfig(
     level=logging.INFO,
@@ -66,8 +66,12 @@ import sys
 import torch
 import json
 from datetime import datetime
+import random
+import numpy as np
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, TQDMProgressBar
+from pytorch_lightning import seed_everything
+
 from meteostat import Point
 from DataPipelineWorkShop import (get_hourly_example, 
                                   PreprocessingContext, 
@@ -119,9 +123,9 @@ def parse_args():
     parser.add_argument(
         "--input_position_type",
         type=str,
-        default="none",
+        # default="none",
         # default="absolute",
-        # default="sinusoidal",
+        default="sinusoidal",
         help="Input Positional Encoding type: none | absolute | sinusoidal"
     )
     parser.add_argument(
@@ -316,13 +320,13 @@ def build_contexts(config, log_dir, closer_type, first_year, last_year):
     training_ctx = TrainingContext(
         optimizer="AdamW",
         scheduler="OneCycleLR",
-        max_lr=3e-4,
+        max_lr=3e-5,
         weight_decay=1e-3,
         beta1=0.9,
         beta2=0.999,
         eps=1e-8,
         div_factor=10,
-        final_div_factor=1e2,
+        final_div_factor=1e3,
         pct_start=0.15,
         anneal_strategy="cos",
         three_phase=False
@@ -362,10 +366,19 @@ def setup_and_get_mlflow_logger(config, project_name, run_name):
     mlf_logger.log_hyperparams(config)
     return mlf_logger
 
+def set_seed(seed: int = 42):
+    seed_everything(seed, workers=True)
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
 # ===========================================================
 def run():
     suppress_runtime_warnings()
     config = parse_args()
+    set_seed(42)
     is_lock_and_loaded = lock_and_load(config)
     current_date, current_time = config["date"], config["time"]
     log_dir, training_log, tracker_log = setup_logging(
@@ -411,21 +424,23 @@ def run():
     logging.info(f"Available features: {available_feature_list}")
 
     logging.info("⚙️ Building model...")
-    # model = MeteoVanillaTransformerEncoder(
-    #     model_ctx=model_ctx,
-    #     forecast_ctx=fc_ctx,
-    #     input_features=available_feature_list,
-    #     closer_type=closer_type,
-    #     training_ctx=training_ctx
-    # )
-    
-    model = MeteoInformerHourglassTransformer(
+    model = MeteoVanillaTransformerEncoder(
         model_ctx=model_ctx,
         forecast_ctx=fc_ctx,
         input_features=available_feature_list,
         closer_type=closer_type,
-        training_ctx=training_ctx
+        training_ctx=training_ctx,
     )
+    
+    # model = MeteoInformerHourglassTransformer(
+    #     model_ctx=model_ctx,
+    #     forecast_ctx=fc_ctx,
+    #     input_features=available_feature_list,
+    #     closer_type=closer_type,
+    #     training_ctx=training_ctx,
+    #     factor=16,
+    #     distil=True
+    # )
 
     checkpoint_dir = os.path.join(log_dir, "checkpoints")
     os.makedirs(checkpoint_dir, exist_ok=True)

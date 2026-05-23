@@ -275,6 +275,9 @@ def run():
         # run prediction for each checkpoint
         prediction_csvs = {}
         for ckpt in ckpts:
+            torch.manual_seed(42)
+            torch.cuda.manual_seed_all(42)
+            
             logging.info(f"running prediction using checkpoint: {ckpt}")
 
             # Get the feature schema used during training
