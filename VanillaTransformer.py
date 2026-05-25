@@ -430,32 +430,105 @@ class MeteoVanillaTransformerEncoder(LightningModule):
         targets: (B, S, F_total)
         y_mask:  (B, S, F_total)
         """
+        idx = self.closer.target_indices
 
-        idx = self.closer.target_indices   # <-- use closer’s indices
-
-        preds_future   = preds[:,   -self.horizon:, :]       # (B, H, out_dim)
-        targets_future = targets[:, -self.horizon:, idx]     # (B, H, out_dim)
-        mask_future    = y_mask[:, -self.horizon:, idx]      # (B, H, out_dim)
+        preds_future   = preds[:,   -self.horizon:, :]
+        targets_future = targets[:, -self.horizon:, idx]
+        mask_future    = y_mask[:, -self.horizon:, idx]
 
         valid = mask_future.all(-1)                          # (B, H)
 
-        return self.loss_fn(
-            preds_future[valid],
-            targets_future[valid]
-        )
+        sq_error = (preds_future - targets_future) ** 2       # (B, H, out_dim)
+        sq_error = sq_error.mean(dim=-1)                      # (B, H)
 
+        horizon_weights = torch.linspace(
+            0.75,
+            1.25,
+            steps=self.horizon,
+            device=preds.device,
+            dtype=preds.dtype,
+        )                                                     # (H,)
+
+        weighted_error = sq_error * horizon_weights[None, :]  # (B, H)
+        valid_weights = horizon_weights[None, :].expand_as(sq_error)
+
+        # normalised weighted loss
+        loss = weighted_error[valid].sum() / valid_weights[valid].sum()
+
+        return loss
+    
+    def _log_prediction_stats_to_wandb(
+        self,
+        preds,
+        targets,
+        y_mask,
+        prefix: str,
+    ):
+        """
+        Log simple statistical summaries of predictions, targets, and residuals
+        over the forecast horizon.
+
+        preds:   (B, S, out_dim)
+        targets: (B, S, F_total)
+        y_mask:  (B, S, F_total)
+        """
+
+        idx = self.closer.target_indices
+
+        preds_f = preds[:, -self.horizon:, :]          # (B, H, out_dim)
+        targets_f = targets[:, -self.horizon:, idx]    # (B, H, out_dim)
+        mask_f = y_mask[:, -self.horizon:, idx]        # (B, H, out_dim)
+
+        valid = mask_f.bool()
+
+        pred_valid = preds_f[valid]
+        target_valid = targets_f[valid]
+        residual_valid = pred_valid - target_valid
+
+        # Avoid logging empty tensors
+        if pred_valid.numel() == 0:
+            return
+
+        stats = {
+            f"{prefix}/pred_mean": pred_valid.mean(),
+            f"{prefix}/pred_median": pred_valid.median(),
+            f"{prefix}/pred_std": pred_valid.std(unbiased=False),
+            f"{prefix}/pred_min": pred_valid.min(),
+            f"{prefix}/pred_max": pred_valid.max(),
+
+            f"{prefix}/target_mean": target_valid.mean(),
+            f"{prefix}/target_median": target_valid.median(),
+            f"{prefix}/target_std": target_valid.std(unbiased=False),
+            f"{prefix}/target_min": target_valid.min(),
+            f"{prefix}/target_max": target_valid.max(),
+
+            f"{prefix}/residual_mean": residual_valid.mean(),
+            f"{prefix}/residual_median": residual_valid.median(),
+            f"{prefix}/residual_std": residual_valid.std(unbiased=False),
+            f"{prefix}/residual_min": residual_valid.min(),
+            f"{prefix}/residual_max": residual_valid.max(),
+        }
+
+        self.log_dict(
+            stats,
+            on_step=True,
+            on_epoch=False,
+            prog_bar=False,
+            logger=True,
+        )
     # ==============================================================
     def training_step(self, batch, batch_idx):
         x, y, x_mask, y_mask = batch
-        preds = self.forward(x, mask=x_mask.any(-1))
-        # x: (B, horizon, feature_dim)
-        # pred: (B, horizon, target_dim)
-        loss = self._compute_loss(preds, y, y_mask)
-        self.log("train_loss", loss)
 
-        # --- Periodic printing (every ~1/3 of an epoch) ---
+        preds = self.forward(x, mask=x_mask.any(-1))
+        loss = self._compute_loss(preds, y, y_mask)
+
+        self.log("train_loss", loss, prog_bar=True)
+
+        # --- Periodic printing/logging every ~1/3 of an epoch ---
         if self.trainer is not None and self.trainer.train_dataloader is not None:
             period = max(100, len(self.trainer.train_dataloader) // 3)
+
             if batch_idx % period == 0:
                 df_pred_inv = inverse_predictions_to_df(
                     preds,
@@ -463,26 +536,52 @@ class MeteoVanillaTransformerEncoder(LightningModule):
                     self.preprocessor,
                     self.horizon,
                 )
+
                 current_lr = self.trainer.optimizers[0].param_groups[0]["lr"]
+
                 logging.info(f"\n[Epoch {self.current_epoch} | Batch {batch_idx}]")
                 logging.info(f"Train Loss: {loss.item():.6f} | LR: {current_lr:.2e}")
                 logging.info(
                     "Preds inverse-transformed:\n"
-                    + df_pred_inv.describe().loc[["mean", "std", "min", "max"]].to_string()
+                    + df_pred_inv.describe()
+                    .loc[["mean", "std", "min", "max"]]
+                    .to_string()
                 )
+
                 self.log("lr", current_lr, prog_bar=True)
 
-        return loss
+                # --- W&B statistical monitoring ---
+                self._log_prediction_stats_to_wandb(
+                    preds=preds,
+                    targets=y,
+                    y_mask=y_mask,
+                    prefix="train_stats",
+                )
 
+        return loss
+    
     def validation_step(self, batch, batch_idx):
         x, y, x_mask, y_mask = batch
+
         preds = self.forward(x, mask=x_mask.any(-1))
         loss = self._compute_loss(preds, y, y_mask)
-        self.log("val_loss", loss, prog_bar=True)
 
-        # --- Periodic validation printing ---
+        self.log(
+            "val_loss",
+            loss,
+            prog_bar=True,
+            on_step=False,
+            on_epoch=True,
+            logger=True,
+        )
+
+        # --- Periodic validation printing/logging ---
         if self.trainer is not None and self.trainer.val_dataloaders is not None:
-            period = max(200, len(self.trainer.val_dataloaders) // 3)
+            try:
+                period = max(200, len(self.trainer.val_dataloaders) // 3)
+            except TypeError:
+                period = 200
+
             if batch_idx % period == 0:
                 df_pred_inv = inverse_predictions_to_df(
                     preds,
@@ -490,11 +589,21 @@ class MeteoVanillaTransformerEncoder(LightningModule):
                     self.preprocessor,
                     self.horizon,
                 )
+
                 logging.info(f"\nValidation: Epoch {self.current_epoch}, Batch {batch_idx}")
                 logging.info(f"Val Loss: {loss.item():.6f}")
                 logging.info(
                     "Preds inverse-transformed:\n"
-                    + df_pred_inv.describe().loc[["mean", "std", "min", "max"]].to_string()
+                    + df_pred_inv.describe()
+                    .loc[["mean", "std", "min", "max"]]
+                    .to_string()
+                )
+
+                self._log_prediction_stats_to_wandb(
+                    preds=preds,
+                    targets=y,
+                    y_mask=y_mask,
+                    prefix="val_stats",
                 )
 
         return loss
@@ -522,7 +631,6 @@ class MeteoVanillaTransformerEncoder(LightningModule):
         self._test_outputs.append(out)
 
         return out
-
 
     def on_test_epoch_end(self):
         outputs = self._test_outputs

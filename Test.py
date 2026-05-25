@@ -64,6 +64,7 @@ import os
 import re
 import json
 import sys
+import time
 from datetime import datetime
 import torch
 from pytorch_lightning import Trainer
@@ -445,6 +446,7 @@ def find_best_checkpoint(ckpt_list):
 
 # ===========================================================
 def run():
+    start_time = time.time()
     config = parse_args()
     is_lock_and_loaded = lock_and_load(config)
     date_time_dir = os.path.join(config["log_dir"], config["date"], config["time"])
@@ -525,6 +527,11 @@ def run():
     out_dir = os.path.join("test_results", config["date"], config["time"])
     save_checkpoint_metrics(all_metrics, out_dir)
     save_residual_tables_by_checkpoint(all_residual_dfs, out_dir)
+    
+    end_time = time.time()
+    elapsed = end_time - start_time
+    elapsed_str = time.strftime("%H:%M:%S", time.gmtime(elapsed))
+    logging.info(f"Elapsed (h:m:s): {elapsed_str}")
 
 if __name__ == "__main__":
     warnings.filterwarnings("ignore")
