@@ -372,7 +372,7 @@ class MeteoVanillaTransformerEncoder(LightningModule):
         forecast_ctx: ForecastContext,
         input_features: List[str],
         closer_type: CloserType,
-        training_ctx: TrainingContext
+        training_ctx: TrainingContext,
     ):
         super().__init__()
         self.save_hyperparameters(ignore=["model_ctx", "forecast_ctx", "training_ctx"])
@@ -380,9 +380,9 @@ class MeteoVanillaTransformerEncoder(LightningModule):
         # store contexts
         self.model_ctx = model_ctx
         self.forecast_ctx = forecast_ctx
-        self.training_ctx =training_ctx
+        self.training_ctx = training_ctx
         self.horizon = forecast_ctx.horizon
-
+        
         # store features
         self.input_features = input_features
 

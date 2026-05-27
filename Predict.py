@@ -64,6 +64,7 @@ import re
 import json
 import sys
 from datetime import datetime
+from dataclasses import replace
 import torch
 from pytorch_lightning import Trainer
 from meteostat import Point
@@ -87,7 +88,9 @@ def parse_args():
     p.add_argument("--gpu", nargs="+", type=int, default=[], help="List of GPU IDs to use")
     p.add_argument("--date", type=str, required=True, help="Run date: YYYYMMDD")
     p.add_argument("--time", type=str, required=True, help="Run time: HHMMSS")
-    p.add_argument("--window_size", type=int, default=24)
+    p.add_argument("--window_size", type=int, default=None,     
+                   help=("Optional prediction input window. "
+                         "If omitted, use the training window from context.json."),)
     p.add_argument("--horizon", type=int, default=12)
     p.add_argument("--batch_size", type=int, default=128)
     p.add_argument("--log_dir", type=str, default="logs", help="Base logging directory")
@@ -232,6 +235,46 @@ def get_input_features_from_checkpoint(ckpt_path):
 
     return hparams["input_features"]
 
+def override_prediction_window(exp_ctx, predict_window):
+    training_window = exp_ctx.forecast.window
+
+    if predict_window is None:
+        logging.info(f"Using training window for prediction: {training_window}")
+        return exp_ctx
+
+    if predict_window <= 0:
+        raise ValueError(f"window_size must be positive, got {predict_window}")
+
+    logging.info(
+        f"Prediction window override: "
+        f"training window={training_window}, prediction window={predict_window}"
+    )
+
+    if predict_window != training_window:
+        if exp_ctx.model.input_position_type != "none":
+            logging.warning(
+                "Longer-window prediction is safest with input_position_type='none'. "
+                f"Current input_position_type={exp_ctx.model.input_position_type!r}."
+            )
+
+        if exp_ctx.model.attention_type not in ["alibi", "rope", "t5"]:
+            logging.warning(
+                "Longer-window prediction is mainly intended for relative-position attention "
+                "such as alibi, rope, or t5. "
+                f"Current attention_type={exp_ctx.model.attention_type!r}."
+            )
+
+    pred_fc = replace(
+        exp_ctx.forecast,
+        window=predict_window,
+    )
+
+    return ExperimentContext(
+        preprocessing=exp_ctx.preprocessing,
+        forecast=pred_fc,
+        model=exp_ctx.model,
+    )
+
 # ===========================================================
 def run():
     config = parse_args()
@@ -239,15 +282,54 @@ def run():
     date_time_dir = os.path.join(config["log_dir"], config["date"], config["time"])
     os.makedirs(date_time_dir, exist_ok=True)
     
-    prediction_dir = os.path.join("prediction", config["date"], config["time"])
-    os.makedirs(prediction_dir, exist_ok=True)
-    
+    date_time_dir = os.path.join(config["log_dir"], config["date"], config["time"])
+    os.makedirs(date_time_dir, exist_ok=True)
+
     # checkpoints
     ckpts = get_checkpoints(config)
 
-    # contex
+    # context
     exp_ctx, _, closer_type = get_contexts(config, date_time_dir)
 
+    # optional prediction-window override
+    exp_ctx = override_prediction_window(
+        exp_ctx,
+        config["window_size"],
+    )
+
+    # prediction run identity
+    pred_run_date = datetime.now().strftime("%Y%m%d")
+    pred_run_time = datetime.now().strftime("%H%M%S")
+
+    prediction_run_name = (
+        f"{pred_run_date}_{pred_run_time}_"
+        f"window{exp_ctx.forecast.window}"
+    )
+
+    prediction_dir = os.path.join(
+        "prediction",
+        config["date"],
+        config["time"],
+        prediction_run_name,
+    )
+
+    os.makedirs(prediction_dir, exist_ok=False)
+    
+    prediction_config = {
+        "training_date": config["date"],
+        "training_time": config["time"],
+        "prediction_date": pred_run_date,
+        "prediction_time": pred_run_time,
+        "prediction_run_name": prediction_run_name,
+        "window_size": exp_ctx.forecast.window,
+        "horizon": exp_ctx.forecast.horizon,
+        "batch_size": config["batch_size"],
+        "checkpoints": ckpts,
+    }
+
+    with open(os.path.join(prediction_dir, "prediction_config.json"), "w") as f:
+        json.dump(prediction_config, f, indent=2)
+    
     # fetch target future data
     kbh = Point(lat=55.6761, lon=12.5683)
     what_year = 2021
@@ -263,7 +345,6 @@ def run():
     }
     
     for when_key, start_time in start_times.items():
-        logging.info(f"Now predicting {when_key}......")
         df_single = make_single_window_dataframe(kbh, start_time, exp_ctx)
 
         trainer = Trainer(
@@ -326,8 +407,10 @@ def run():
 
             # Identify base timestamp (last observed hour before forecast)
             horizon = exp_ctx.forecast.horizon
-            base_time = df_single.index[exp_ctx.forecast.window - 1]
-            future_times = [base_time + pd.Timedelta(hours=k + 1) for k in range(horizon)]
+            future_times = [
+                start_time + pd.Timedelta(hours=k)
+                for k in range(horizon)
+            ]
 
             # Use the model's resolved output feature names
             resolved_target_features = model.get_target_features()

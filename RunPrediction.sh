@@ -19,9 +19,10 @@ pkill -f "python3 Predict.py" || true
 sleep 1
 
 # ---- manual selection here ----
-DATE=20260520
-TIME=140934
+DATE=20260527
+TIME=114109
 # -------------------------------
+WINDOW_SIZE=48
 RUN_DATE=$(date +%Y%m%d)
 RUN_TIME=$(date +%H%M%S)
 
@@ -29,11 +30,12 @@ echo "🕒 Predicting with checkpoint: ${DATE} ${TIME}"
 echo "🕒 Prediction run: ${RUN_DATE} ${RUN_TIME}"
 mkdir -p logs/${DATE}/${TIME}
 
-PRED_STDOUT="logs/${DATE}/${TIME}/${RUN_DATE}_${RUN_TIME}_predict.log"
+PRED_STDOUT="logs/${DATE}/${TIME}/${RUN_DATE}_${RUN_TIME}_predict_win${WINDOW_SIZE}.log"
 
 nohup python3 Predict.py \
   --date $DATE \
   --time $TIME \
+  --window_size $WINDOW_SIZE \
   > "$PRED_STDOUT" 2>&1 &
 
 echo "🔮 Prediction started (PID: $!)"

@@ -131,10 +131,10 @@ def parse_args():
     parser.add_argument(
         "--attention_type",
         type=str,
-        default="basic",
+        # default="basic",
         # default="t5",
         # default="alibi",
-        # default="rope",
+        default="rope",
         # default="probsparse",
         help="Self-Attention Mechanism type: basic | t5 | alibi | rope | probsparse"
     )
@@ -448,7 +448,7 @@ def run():
     checkpoint_callback = ModelCheckpoint(
         dirpath=checkpoint_dir,
         filename="{epoch:02d}-{val_loss:.4f}",
-        save_top_k=2,
+        save_top_k=1,
         monitor="val_loss",
         mode="min", 
         save_last=False,
