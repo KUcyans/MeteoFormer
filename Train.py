@@ -91,7 +91,7 @@ setMplParam()
 def parse_args():
     parser = argparse.ArgumentParser(description="Train Transformer on Meteostat data")
     parser.add_argument("--gpu", nargs="+", type=int, default=[], help="List of GPU IDs to use")
-    parser.add_argument("--window_size", type=int, default=72)
+    parser.add_argument("--window_size", type=int, default=128)
     parser.add_argument("--horizon", type=int, default=12)
     parser.add_argument("--batch_size", type=int, default=512)
     parser.add_argument("--n_heads", type=int, default=4)
