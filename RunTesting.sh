@@ -22,7 +22,7 @@ sleep 1
 # MANUAL SELECTION OF TRAINING RUN
 # -------------------------------
 DATE=20260527   # training run date: YYYYMMDD
-TIME=210527     # training run time: HHMMSS
+TIME=215154     # training run time: HHMMSS
 # -------------------------------
 
 # Timestamp for THIS test run
