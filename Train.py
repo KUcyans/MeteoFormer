@@ -91,14 +91,14 @@ setMplParam()
 def parse_args():
     parser = argparse.ArgumentParser(description="Train Transformer on Meteostat data")
     parser.add_argument("--gpu", nargs="+", type=int, default=[], help="List of GPU IDs to use")
-    parser.add_argument("--window_size", type=int, default=128)
-    parser.add_argument("--horizon", type=int, default=12)
+    parser.add_argument("--window_size", type=int, default=72)
+    parser.add_argument("--horizon", type=int, default=3)
     parser.add_argument("--batch_size", type=int, default=512)
     parser.add_argument("--n_heads", type=int, default=4)
     parser.add_argument("--d_model", type=int, default=256)
     parser.add_argument("--d_ff", type=int, default=1024)
     parser.add_argument("--starter_num_layers", type=int, default=6)
-    parser.add_argument("--closer_num_layers", type=int, default=4)
+    parser.add_argument("--closer_num_layers", type=int, default=8)
     parser.add_argument("--dropout", type=float, default=0.3)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--val_ratio", type=float, default=0.2)
@@ -106,9 +106,17 @@ def parse_args():
     parser.add_argument(
         "--closer_type",
         type=str,
-        # default="thermodynamic",
-        default="thermo",
-        help="Task type: thermo | thermodynamic | wind | precipitation"
+        # default="thermo",
+        # default="precipitation",
+        # default="wind_speed",
+        default="wind_direction",
+        help="Task type: \
+          thermo \
+        | precipitation \
+        | wind_speed \
+        | wind_direction \
+        | thermodynamic \
+        | wind"
     )
     '''
     Only For Informers!

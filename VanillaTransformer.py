@@ -216,7 +216,7 @@ class MeteoTaskCloser(nn.Module, abc.ABC):
 
         # ===== 3) Build FFN head with subclass overrides =====
         d_model = model_ctx.d_model
-        depth = self.HEAD_DEPTH or model_ctx.closer_num_layers
+        depth = model_ctx.closer_num_layers or self.HEAD_DEPTH
         dropout = model_ctx.dropout
         hidden_dim = self.HIDDEN_MULTIPLIER * d_model
 
@@ -286,15 +286,6 @@ class MeteoTaskCloser(nn.Module, abc.ABC):
 
         return resolved_targets
 
-
-class ThermodynamicCloser(MeteoTaskCloser):
-    TARGETS = ["temp", "rhum", "pres", "dwpt"]
-    HEAD_DEPTH = 4
-    HIDDEN_MULTIPLIER = 4
-
-    def forward(self, H):
-        return self.net(H)
-
 class ThermoCloser(MeteoTaskCloser):
     TARGETS = ["temp",]
     HEAD_DEPTH = 4
@@ -302,7 +293,31 @@ class ThermoCloser(MeteoTaskCloser):
 
     def forward(self, H):
         return self.net(H)
+
+class PrecipitationCloser(MeteoTaskCloser):
+    TARGETS = ["prcp"]
+    HEAD_DEPTH = 6
+    HIDDEN_MULTIPLIER = 8
+
+    def forward(self, H):
+        return self.net(H)
     
+class WindSpeedCloser(MeteoTaskCloser):
+    TARGETS = ["wspd"]
+    HEAD_DEPTH = 8                 
+    HIDDEN_MULTIPLIER = 8             
+
+    def forward(self, H):
+        return self.net(H)
+    
+class WindDirectionCloser(MeteoTaskCloser):
+    TARGETS = ["sin_wdir", "cos_wdir"]
+    HEAD_DEPTH = 8                 
+    HIDDEN_MULTIPLIER = 8             
+
+    def forward(self, H):
+        return self.net(H)
+
 class WindCloser(MeteoTaskCloser):
     TARGETS = ["wspd", "sin_wdir", "cos_wdir"]
     HEAD_DEPTH = 8                 
@@ -311,19 +326,21 @@ class WindCloser(MeteoTaskCloser):
     def forward(self, H):
         return self.net(H)
     
-class PrecipitationCloser(MeteoTaskCloser):
-    TARGETS = ["prcp"]
-    HEAD_DEPTH = 6
-    HIDDEN_MULTIPLIER = 8
+class ThermodynamicCloser(MeteoTaskCloser):
+    TARGETS = ["temp", "rhum", "pres", "dwpt"]
+    HEAD_DEPTH = 4
+    HIDDEN_MULTIPLIER = 4
 
     def forward(self, H):
         return self.net(H)
-
+    
 class CloserType(Enum):
-    Thermo        = (0, ThermoCloser, "thermo")
-    Thermodynamic = (1, ThermodynamicCloser, "thermodynamic")
-    Wind          = (2, WindCloser, "wind")
-    Precipitation = (3, PrecipitationCloser, "precipitation")
+    THERMO        = (0, ThermoCloser, "thermo")
+    PRECIPITATION = (1, PrecipitationCloser, "precipitation")
+    WINDSPEED     = (2, WindSpeedCloser, "wind_speed")
+    WINDDIRECTION = (3, WindDirectionCloser, "wind_direction")
+    THERMODYNAMIC = (4, ThermodynamicCloser, "thermodynamic")
+    WIND          = (5, WindCloser, "wind")
     
     def __init__(self, 
                  val:int,

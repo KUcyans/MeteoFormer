@@ -19,6 +19,9 @@ PredictionPerformance.ipynb
 TemperaturePrediction.ipynb
 TemperatureTest.ipynb
 TemperatureTest_window.ipynb
+TemperatureTest_d_model.ipynb
+TemperatureTest_horizon.ipynb
+WindSpeedTest.ipynb
 Predict.py
 Train.py
 Test.py

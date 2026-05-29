@@ -19,10 +19,11 @@ pkill -f "python3 Predict.py" || true
 sleep 1
 
 # ---- manual selection here ----
-DATE=20260527
-TIME=192233
+DATE=20260529
+TIME=124912
 # -------------------------------
-WINDOW_SIZE=192
+WINDOW_SIZE=72
+HORIZON_SIZE=3
 RUN_DATE=$(date +%Y%m%d)
 RUN_TIME=$(date +%H%M%S)
 
@@ -30,14 +31,15 @@ RUN_TIME=$(date +%H%M%S)
 # echo "🕒 Prediction run: ${RUN_DATE} ${RUN_TIME}"
 mkdir -p logs/${DATE}/${TIME}
 
-PRED_STDOUT="logs/${DATE}/${TIME}/${RUN_DATE}_${RUN_TIME}_predict_win${WINDOW_SIZE}.log"
+PRED_STDOUT="logs/${DATE}/${TIME}/${RUN_DATE}_${RUN_TIME}_win${WINDOW_SIZE}_hor${HORIZON_SIZE}.log"
 
 nohup python3 Predict.py \
   --date $DATE \
   --time $TIME \
   --window_size $WINDOW_SIZE \
+  --horizon $HORIZON_SIZE \
   > "$PRED_STDOUT" 2>&1 &
 
 echo "🔮 Prediction started (PID: $!)"
-echo "${RUN_DATE}_${RUN_TIME}_predict_win${WINDOW_SIZE}"
+# echo "${RUN_DATE}_${RUN_TIME}_win${WINDOW_SIZE}_hor${HORIZON_SIZE}"
 # echo "📄 Full Output Dir: $PRED_STDOUT"

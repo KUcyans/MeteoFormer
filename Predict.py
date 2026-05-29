@@ -91,8 +91,8 @@ def parse_args():
     p.add_argument("--window_size", type=int, default=None,     
                    help=("Optional prediction input window. "
                          "If omitted, use the training window from context.json."),)
-    p.add_argument("--horizon", type=int, default=12)
-    p.add_argument("--batch_size", type=int, default=128)
+    p.add_argument("--horizon", type=int, default=6)
+    p.add_argument("--batch_size", type=int, default=512)
     p.add_argument("--log_dir", type=str, default="logs", help="Base logging directory")
 
     return vars(p.parse_args())
@@ -302,8 +302,9 @@ def run():
     pred_run_time = datetime.now().strftime("%H%M%S")
 
     prediction_run_name = (
-        f"{pred_run_date}_{pred_run_time}_"
-        f"window{exp_ctx.forecast.window}"
+    f"{pred_run_date}_{pred_run_time}_"
+        f"win{exp_ctx.forecast.window}_"
+        f"hor{exp_ctx.forecast.horizon}"
     )
 
     prediction_dir = os.path.join(
